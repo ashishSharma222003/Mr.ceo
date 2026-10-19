@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local DB
+*.db
+*.sqlite3
+
+# Node / frontend
+node_modules/
+.next/
+out/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+#claude
+.claude/
