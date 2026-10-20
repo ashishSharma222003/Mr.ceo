@@ -17,6 +17,7 @@ User ──chat──▶ Manager (LLM) ──tool calls──▶ Sub-agents (LLM
 | Web framework | FastAPI (async) + Uvicorn |
 | Database | SQLite via SQLModel + SQLAlchemy async (`aiosqlite`) |
 | LLM orchestration | LangChain `create_agent` (+ LangGraph SQLite checkpointer for memory) |
+| Tools / MCP | LangChain tools: built-in Python tools (`app/tools/`) + MCP servers via `langchain-mcp-adapters`, both managed as editable DB skills |
 | LLM provider | Anthropic (`langchain-anthropic`) |
 | Memory / chat history | `AsyncSqliteSaver` checkpointer + `ChatMessage` table, in the same SQLite file as the app DB |
 | Live updates | Server-Sent Events (`sse-starlette`) |
@@ -67,15 +68,24 @@ backend/
     ├── main.py          # App creation, CORS, router mounting, startup (init_db, init_checkpointer), /health
     ├── config.py        # Settings (env vars)
     ├── db.py            # Async engine, session factory, init_db, get_session dependency
-    ├── models.py        # DB tables: Agent, Task, ChatMessage (+ TaskStatus enum)
-    ├── schemas.py       # Request/response bodies (AgentCreate, AgentUpdate, ChatRequest, ChatResponse)
+    ├── models.py        # DB tables: Agent, Task, ChatMessage, Todo, Skill (+ status enums)
+    ├── schemas.py       # Request/response bodies (Agent*, Skill*, Todo*, Chat*)
     ├── routes/          # HTTP layer (thin: validation + calling services/DB)
     │   ├── agents.py    # Agent CRUD
+    │   ├── skills.py    # Skill CRUD (builtin + MCP), editable at runtime
+    │   ├── todos.py     # Tasklist: user can add / rename / remove items
     │   ├── tasks.py     # Task read endpoints + SSE event stream
     │   └── chat.py      # Talk to the Manager
+    ├── tools/           # Built-in Python tools (LangChain StructuredTools)
+    │   ├── registry.py  # BUILTIN_TOOLS dict + @builtin_tool decorator
+    │   ├── calculator.py, clock.py   # example tools
+    │   └── __init__.py  # importing the package registers every tool
     └── services/        # Business logic
-        ├── manager.py   # Manager agent: builds delegation tools, dispatches tasks
+        ├── manager.py   # Manager agent: delegation + tasklist tools; notified when tasks end
+        ├── tasklist_tools.py  # Manager tools: get_tasklist, add_todo, rename_todo, remove_todo, complete_todo
+        ├── todos.py     # Tasklist DB operations (+ SSE events)
         ├── runner.py    # Runs one task on one sub-agent in the background
+        ├── skills.py    # Loads DB skills -> LangChain tools (+ MCP) for a sub-agent; seeds defaults
         ├── memory.py    # Conversation memory (SQLite checkpointer), chat-message saving, thread-id helper
         └── events.py    # In-memory pub/sub that feeds the SSE endpoint
 ```
@@ -95,7 +105,7 @@ A sub-agent definition. Created by the user, fully data-driven. There is no code
 | `name` | str | Shown to the Manager and used to name its tool |
 | `role_prompt` | str | The agent's system prompt (who it is, what it does) |
 | `model` | str | Anthropic model id, default `claude-sonnet-5-5` |
-| `skills` | list[str] (JSON) | Currently appended to the prompt as text (see TODOs) |
+| `skills` | list[str] (JSON) | Names of `Skill` rows; each resolves to real tools (see 6.6) |
 | `created_at` | datetime (UTC) | |
 
 ### `Task`
@@ -111,6 +121,30 @@ One unit of work given to one agent.
 | `result` | str \| null | Agent output, or the error message if failed |
 | `created_at` / `finished_at` | datetime | |
 
+### `Skill`
+An editable capability that agents reference by name.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | int | PK |
+| `name` | str | Unique. What `Agent.skills` contains |
+| `description` / `instructions` | str | Shown to the agent in its system prompt |
+| `type` | str | `builtin` or `mcp` |
+| `tool_key` | str \| null | `builtin`: name of a Python tool in `app/tools` |
+| `mcp_config` | JSON \| null | `mcp`: a `langchain-mcp-adapters` connection (needs `transport`) |
+
+### `Todo`
+One item of a conversation's tasklist, owned by the Manager.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | int | PK |
+| `thread_id` | str | Manager conversation (indexed) |
+| `title` | str | |
+| `status` | enum | `todo` → `in_progress` (set on delegation) → `done` (**only the Manager sets this**) |
+| `task_id` | int \| null | Latest sub-agent `Task` working on it |
+| `created_at` / `updated_at` | datetime | |
+
 ### `ChatMessage`
 Every chat message, saved in the same SQLite file as the checkpoints.
 
@@ -118,7 +152,7 @@ Every chat message, saved in the same SQLite file as the checkpoints.
 |---|---|---|
 | `id` | int | PK |
 | `thread_id` | str | Manager conversation id (indexed) |
-| `role` | str | `user`, `manager` or `agent` |
+| `role` | str | `user`, `manager`, `agent`, or `system` (internal `[UPDATE]` reports sent to the Manager) |
 | `content` | str | Message text |
 | `agent_id` | int \| null | FK → `agent.id`; set for Manager ↔ sub-agent messages |
 | `created_at` | datetime (UTC) | |
@@ -133,10 +167,28 @@ All routes are mounted under `/api` (except `/health`).
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/agents` | List all agents |
-| POST | `/api/agents` | Create an agent (`name`, `role_prompt`, optional `model`, `skills`) → 201 |
+| POST | `/api/agents` | Create an agent (`name`, `role_prompt`, optional `model`, `skills`) → 201. Unknown skill names → 422 (see `/api/skills`) |
 | GET | `/api/agents/{id}` | Get one agent (404 if missing) |
 | PATCH | `/api/agents/{id}` | Partial update; only fields you send change |
 | DELETE | `/api/agents/{id}` | Delete the agent **and all its tasks** → 204 |
+
+### Skills: `routes/skills.py`
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/skills` | List skills |
+| GET | `/api/skills/builtin-tools` | Python tools a `builtin` skill can point at (`tool_key`) |
+| POST | `/api/skills` | Create (`name`, `type`, + `tool_key` or `mcp_config`, optional `description`, `instructions`) → 201. Invalid → 422, duplicate name → 409 |
+| GET | `/api/skills/{id}` | Get one (404 if missing) |
+| PATCH | `/api/skills/{id}` | Partial update. Renaming also renames it in every agent's `skills` |
+| DELETE | `/api/skills/{id}` | Delete; it is removed from every agent's `skills` → 204 |
+
+### Tasklist: `routes/todos.py`
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/threads/{thread_id}/todos` | The conversation's tasklist |
+| POST | `/api/threads/{thread_id}/todos` | Add an item (`{"title": "..."}`) → 201 |
+| PATCH | `/api/todos/{id}` | Rename (`{"title": "..."}`). **Status cannot be set by users** |
+| DELETE | `/api/todos/{id}` | Remove an item → 204 |
 
 ### Chat: `routes/chat.py`
 | Method | Path | Description |
@@ -145,7 +197,7 @@ All routes are mounted under `/api` (except `/health`).
 | GET | `/api/chat/{thread_id}/messages` | Saved messages of a thread, oldest first |
 
 Request: `{ "message": "...", "thread_id": "optional" }`
-Response: `{ "thread_id": "...", "reply": "...", "tasks": [Task, ...] }`
+Response: `{ "thread_id": "...", "reply": "...", "tasks": [Task, ...], "todos": [Todo, ...] }`
 
 - Omit `thread_id` to start a new conversation; a new one is generated and returned.
 - Send the same `thread_id` back to continue the conversation, so the Manager and the sub-agents remember earlier messages.
@@ -156,14 +208,16 @@ Response: `{ "thread_id": "...", "reply": "...", "tasks": [Task, ...] }`
 |---|---|---|
 | GET | `/api/tasks` | All tasks, newest first |
 | GET | `/api/tasks/{id}` | One task (404 if missing) |
-| GET | `/api/events` | **SSE stream** of `task.updated` events |
+| GET | `/api/events` | **SSE stream**: `task.updated`, `todo.updated`, `todo.deleted`, `chat.message` |
 
 SSE event format:
 ```
 event: task.updated
 data: {"id": 3, "agent_id": 1, "status": "running", "result": null, ...}   # full Task as JSON
 ```
-An event is emitted when a task is created (`pending`), starts (`running`), and finishes (`done`/`failed`).
+A `task.updated` event is emitted when a task is created (`pending`), starts (`running`), and finishes (`done`/`failed`).
+
+Other events carry JSON too: `todo.updated` / `todo.deleted` (the full Todo) on every tasklist change, and `chat.message` (`{thread_id, role: "manager", content}`) when the Manager posts a message on its own, e.g. after a sub-agent finishes. Show it in the chat window for that thread.
 
 ---
 
@@ -187,13 +241,15 @@ services/manager.py   load all Agents from DB
   │                   └─ API key present  → build Manager LLM agent:
   │                          • one tool per sub-agent: delegate_to_<name>_<id>
   │                            (description = agent's role + skills)
-  │                          • system prompt: "never do the work, delegate"
+  │                          • tasklist tools: get_tasklist, add_todo, rename_todo, remove_todo, complete_todo
+  │                          • system prompt: "delegate, keep the tasklist" + the current tasklist
   │                          • checkpointer = shared memory, keyed by thread_id
   │                        Manager decides which tool(s) to call
   │
   ▼  (each tool call)
 _dispatch()           1. INSERT Task(status=pending)
                       2. publish SSE "task.updated"
+                      2b. link a Todo (the given todo_id, or auto-create one) → in_progress
                       3. asyncio.create_task(run_task(task.id))  ← fire & forget
                       4. return immediately: "Task #N started on 'X'"
   │
@@ -209,14 +265,17 @@ run_task(task_id)                       # runs in its own DB session, outside th
   1. status = running  → commit → SSE "task.updated"
   2. _execute(agent, task):
         fake mode → sleep 3s, return canned text
-        real mode → create_agent(model=agent.model,
-                                 system_prompt=role_prompt (+ skills list),
+        real mode → tools, prompt = load_skills(agent.skills)
+                    create_agent(model=agent.model, tools=tools,
+                                 system_prompt=role_prompt + skills prompt,
                                  checkpointer=shared memory)
                     invoke with task.instruction on thread "<thread_id>:<agent_id>"
   3. success → status = done,   result = agent output
      exception → status = failed, result = error message
   4. finished_at = now → commit → SSE "task.updated"
 ```
+
+After the task ends, `run_task` calls `manager.notify_task_finished(task_id)` (see 6.7).
 
 The frontend therefore: `POST /api/chat` → show the reply → listen to `GET /api/events` and update each task card as `task.updated` events arrive.
 
@@ -240,6 +299,73 @@ Failed task errors are not saved as chat messages; they stay on `Task.result`. R
 ### 6.5 Events (`services/events.py`)
 A tiny in-memory pub/sub. Each connected SSE client gets an `asyncio.Queue`; `publish()` pushes to all of them. Clients are removed when they disconnect.
 
+### 6.6 Skills, tools and MCP
+
+**Tools are plain LangChain tools.** Built-in tools are `StructuredTool`s, and MCP tools come from `langchain-mcp-adapters` as LangChain tools, so both are passed directly to `create_agent(tools=[...])`.
+
+**Skills live in the database** (`skill` table, `/api/skills`) so they can be edited at runtime. An agent's `skills` is a list of skill names. On every task, `runner.py` calls `load_skills(session, agent.skills)` (in `services/skills.py`), which resolves each name to tools and adds a short "you can use these skills" note (description + instructions) to the sub-agent's system prompt. Edits to a skill or to an agent's skills apply to the next task.
+
+| Type | What the skill row holds | Tools the agent gets |
+|---|---|---|
+| `builtin` | `tool_key` → a Python tool in `app/tools/` | That one tool |
+| `mcp` | `mcp_config` (connection JSON) | All tools the MCP server exposes |
+
+Default skills for every built-in tool (`calculator`, `current_time`) are created at startup if missing. Your edits are never overwritten.
+
+**Add your own Python tool** (code can't be stored in the DB, so it lives in `app/tools/`):
+
+```python
+# app/tools/word_count.py
+from .registry import builtin_tool
+
+@builtin_tool("word_count", "Count the words in a text.")
+def word_count(text: str) -> str:
+    return str(len(text.split()))
+```
+
+Add `word_count` to the import line in `app/tools/__init__.py` and restart. A default skill `word_count` appears in `GET /api/skills`. Then give an agent `"skills": ["word_count"]`. Use `async def` for I/O-bound tools.
+
+**Add an MCP server**: no code or restart needed, just create a skill:
+
+```bash
+curl -X POST localhost:8000/api/skills -H 'content-type: application/json' -d '{
+  "name": "filesystem", "type": "mcp",
+  "description": "Read files in /data",
+  "mcp_config": {"transport": "stdio", "command": "npx",
+                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]}
+}'
+```
+
+`streamable_http` works too: `{"transport": "streamable_http", "url": "http://localhost:9000/mcp", "headers": {...}}`. If an MCP server fails to start or connect, it is logged and skipped, and the task still runs without those tools.
+
+Notes: skills apply to sub-agents only; the Manager's tools are the delegation and tasklist tools. `mcp_config` can contain secrets and is returned by `GET /api/skills`, so don't expose this API without auth. A stdio MCP server runs as a local process with the backend's permissions, so only add servers you trust.
+
+### 6.7 Tasklist and task-completion updates
+
+Each conversation (`thread_id`) has a tasklist (`Todo` rows). The Manager manages it **through tool calls** (`services/tasklist_tools.py`): `get_tasklist`, `add_todo`, `rename_todo`, `remove_todo`, `complete_todo`. The current list is also put into its system prompt on every run, so it always sees the user's edits.
+
+```
+User/Manager add todos ──▶ Manager delegates (todo_id) ──▶ Todo = in_progress
+                                                              │
+sub-agent finishes (runner.py) ◀──────────────────────────────┘
+  │
+  ▼  notify_task_finished(task_id)
+Manager gets "[UPDATE] Sub-agent X finished task #N. Result: ..." on the same thread
+  │   (one Manager run per thread at a time: a per-thread lock)
+  ▼
+Manager checks the result → complete_todo(id) → writes a message for the user
+  │
+  ▼
+saved as ChatMessage + SSE "todo.updated" and "chat.message"
+```
+
+Rules:
+- **Only the Manager marks items done**, and only after a sub-agent's report. The user REST API can add, rename and remove items but not change status.
+- If a task **fails**, the Manager is told, leaves the todo `in_progress` and tells the user.
+- Delegating without a `todo_id` auto-creates an item, so all work is tracked.
+- Fake mode (no API key) mimics this: the item is marked done on success, and a canned manager message is posted.
+- Real mode costs one extra Manager LLM call per finished sub-agent task.
+
 ---
 
 ## 7. Key design decisions
@@ -255,7 +381,8 @@ A tiny in-memory pub/sub. Each connected SSE client gets an `asyncio.Queue`; `pu
 
 - **Memory is SQLite-only**: `memory.py` derives the checkpointer path from `DATABASE_URL`, so switching the app DB to Postgres needs a different checkpointer.
 - **Events are in-process** (`events.py`): works for a single server instance only. Swap for Redis to scale out.
-- **Skills are text only**: they're listed in the sub-agent's prompt, not wired as real tools (`tools=[]` in `runner.py`).
+- **Notifications are in-process**: if the server stops while a task runs, the Manager is never told and the todo stays `in_progress`.
+- **Skills have no per-agent config or auth**: an MCP server is shared by every agent that names it, and MCP tools are loaded by opening a new connection per task (no pooling). There is no approval step before a tool runs.
 - **No auth** on any endpoint; CORS is the only protection.
 - **No migrations**: `create_all` only creates missing tables. It won't alter existing ones when models change (delete `mrceo.db` in dev).
 - **Tasks in flight are lost on restart**: a task left `pending`/`running` when the server stops is never resumed or marked failed.

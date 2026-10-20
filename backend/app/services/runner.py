@@ -9,28 +9,23 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Agent, Task, TaskStatus
 from . import events
+from .llm import make_model
+from .skills import load_skills
 from .memory import agent_thread_id, get_checkpointer, save_message
 
 
-def build_system_prompt(agent: Agent) -> str:
-    prompt = agent.role_prompt
-    if agent.skills:
-        # TODO: skills become real tools later; for now they are listed in the prompt.
-        prompt += "\n\nYour skills: " + ", ".join(agent.skills)
-    return prompt
-
-
-async def _execute(agent: Agent, task: Task) -> str:
+async def _execute(session, agent: Agent, task: Task) -> str:
     instruction = task.instruction
     if not settings.anthropic_api_key:
         # No key configured: keep the prototype usable with a canned result.
         await asyncio.sleep(3)
         return f"[{agent.name}] (fake, no ANTHROPIC_API_KEY) finished: {instruction}"
 
+    tools, skills_prompt = await load_skills(session, agent.skills)  # DB skills -> LangChain tools (+ MCP)
     runnable = create_agent(
-        model=f"anthropic:{agent.model}",
-        tools=[],
-        system_prompt=build_system_prompt(agent),  # config: fresh from DB every run
+        model=make_model(agent.model),
+        tools=tools,
+        system_prompt=agent.role_prompt + skills_prompt,  # config: fresh from DB every run
         checkpointer=get_checkpointer(),  # history: kept per (manager thread, agent)
     )
     thread = agent_thread_id(task.thread_id or f"task-{task.id}", agent.id)
@@ -57,7 +52,7 @@ async def run_task(task_id: int) -> None:
         chat_thread = task.thread_id or f"task-{task.id}"
         try:
             await save_message(session, chat_thread, "manager", task.instruction, agent_id=agent.id)
-            task.result = await _execute(agent, task)
+            task.result = await _execute(session, agent, task)
             task.status = TaskStatus.done
             await save_message(session, chat_thread, "agent", task.result, agent_id=agent.id)
         except Exception as e:  # noqa: BLE001
@@ -68,3 +63,8 @@ async def run_task(task_id: int) -> None:
         session.add(task)
         await session.commit()
         events.publish("task.updated", task.model_dump())
+
+    # Tell the Manager (imported here: manager.py imports this module).
+    from .manager import notify_task_finished
+
+    await notify_task_finished(task_id)

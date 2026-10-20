@@ -43,3 +43,38 @@ class ChatMessage(SQLModel, table=True):
     content: str
     agent_id: int | None = Field(default=None, foreign_key="agent.id")  # set for sub-agent messages
     created_at: datetime = Field(default_factory=_now)
+
+
+class TodoStatus(str, Enum):
+    todo = "todo"
+    in_progress = "in_progress"  # set automatically when work is delegated
+    done = "done"  # set only by the Manager, after a sub-agent reports back
+
+
+class Todo(SQLModel, table=True):
+    """One item of a conversation's tasklist, owned by the Manager."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    thread_id: str = Field(index=True)
+    title: str
+    status: TodoStatus = TodoStatus.todo
+    task_id: int | None = Field(default=None, foreign_key="task.id")  # latest sub-agent Task
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class Skill(SQLModel, table=True):
+    """A capability an agent can be given (by name). Editable at runtime.
+
+    type="builtin": `tool_key` names a Python tool in app/tools.
+    type="mcp":     `mcp_config` is a langchain-mcp-adapters connection; all the server's tools load.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: str = ""
+    instructions: str = ""  # extra system-prompt text for agents with this skill
+    type: str  # "builtin" | "mcp"
+    tool_key: str | None = None
+    mcp_config: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    created_at: datetime = Field(default_factory=_now)

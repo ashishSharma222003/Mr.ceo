@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from .models import Task
+from .models import Task, Todo
 
 
 class AgentCreate(BaseModel):
@@ -28,3 +28,32 @@ class ChatResponse(BaseModel):
     thread_id: str
     reply: str
     tasks: list[Task]
+    todos: list[Todo] = []
+
+
+class SkillCreate(BaseModel):
+    name: str
+    description: str = ""
+    instructions: str = ""
+    type: str  # "builtin" | "mcp"
+    tool_key: str | None = None
+    mcp_config: dict | None = None
+
+
+class SkillUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    instructions: str | None = None
+    type: str | None = None
+    tool_key: str | None = None
+    mcp_config: dict | None = None
+
+
+class TodoCreate(BaseModel):
+    title: str
+
+
+class TodoUpdate(BaseModel):
+    """Users may only rename. Completion belongs to the Manager."""
+
+    title: str
