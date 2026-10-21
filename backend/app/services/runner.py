@@ -16,7 +16,7 @@ from .memory import agent_thread_id, get_checkpointer, save_message
 
 async def _execute(session, agent: Agent, task: Task) -> str:
     instruction = task.instruction
-    if not settings.anthropic_api_key:
+    if settings.fake_mode:
         # No key configured: keep the prototype usable with a canned result.
         await asyncio.sleep(3)
         return f"[{agent.name}] (fake, no ANTHROPIC_API_KEY) finished: {instruction}"

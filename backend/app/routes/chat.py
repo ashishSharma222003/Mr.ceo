@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -15,7 +15,10 @@ router = APIRouter(tags=["chat"])
 @router.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, session: AsyncSession = Depends(get_session)):
     thread_id = body.thread_id or uuid.uuid4().hex
-    reply, tasks = await manager.handle_message(session, body.message, thread_id)
+    try:
+        reply, tasks = await manager.handle_message(session, body.message, thread_id)
+    except Exception as e:  # noqa: BLE001 - LLM down, bad key, model not pulled, ...
+        raise HTTPException(502, f"LLM call failed: {type(e).__name__}: {e}") from e
     return ChatResponse(
         thread_id=thread_id, reply=reply, tasks=tasks, todos=await todos.list_todos(session, thread_id)
     )

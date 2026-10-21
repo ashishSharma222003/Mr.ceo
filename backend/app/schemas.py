@@ -6,7 +6,7 @@ from .models import Task, Todo
 class AgentCreate(BaseModel):
     name: str
     role_prompt: str
-    model: str = "claude-sonnet-5-5"
+    model: str | None = None  # empty = DEFAULT_AGENT_MODEL / provider default
     skills: list[str] = []
 
 

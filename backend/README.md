@@ -18,7 +18,7 @@ User ──chat──▶ Manager (LLM) ──tool calls──▶ Sub-agents (LLM
 | Database | SQLite via SQLModel + SQLAlchemy async (`aiosqlite`) |
 | LLM orchestration | LangChain `create_agent` (+ LangGraph SQLite checkpointer for memory) |
 | Tools / MCP | LangChain tools: built-in Python tools (`app/tools/`) + MCP servers via `langchain-mcp-adapters`, both managed as editable DB skills |
-| LLM provider | Anthropic (`langchain-anthropic`) |
+| LLM provider | Anthropic (`langchain-anthropic`) or local Ollama (`langchain-ollama`), chosen by `LLM_PROVIDER` |
 | Memory / chat history | `AsyncSqliteSaver` checkpointer + `ChatMessage` table, in the same SQLite file as the app DB |
 | Live updates | Server-Sent Events (`sse-starlette`) |
 | Config | `pydantic-settings` (reads `.env`) |
@@ -45,12 +45,26 @@ uvicorn app.main:app --reload --port 8000
 |---|---|---|
 | `DATABASE_URL` | `sqlite+aiosqlite:///./mrceo.db` | DB connection string. Must be SQLite: the checkpointer opens the same file |
 | `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed frontend origins (JSON list) |
-| `ANTHROPIC_API_KEY` | *(empty)* | **Empty = fake mode** (see below) |
-| `MANAGER_MODEL` | `claude-sonnet-5-5` | Model used by the Manager |
+| `LLM_PROVIDER` | `anthropic` | `anthropic` or `ollama` |
+| `ANTHROPIC_API_KEY` | *(empty)* | With provider `anthropic`, **empty = fake mode** (see below) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server |
+| `MANAGER_MODEL` | provider default | Model for the Manager (`claude-sonnet-5-5` / `llama3.1`) |
+| `DEFAULT_AGENT_MODEL` | provider default | Model given to agents created without one |
+
+### Using Ollama
+
+```bash
+ollama serve                      # if it isn't already running
+ollama pull llama3.1              # pick a model that supports tool calling
+# .env
+LLM_PROVIDER=ollama
+```
+
+Models must support **tool calling** (e.g. `llama3.1`, `qwen2.5`, `mistral-nemo`), because the Manager delegates and updates the tasklist through tools. Small models are noticeably worse at this than Claude. A model name can carry its own provider prefix, so one install can mix both: an agent with `"model": "anthropic:claude-sonnet-5-5"` or `"model": "ollama:qwen2.5:7b"`. Without a prefix, `LLM_PROVIDER` decides. If the LLM can't be reached (server down, model not pulled, bad key), `POST /api/chat` returns 502 with the reason, and a failing sub-agent task is marked `failed`.
 
 ### Fake mode
 
-If `ANTHROPIC_API_KEY` is empty, no LLM is called:
+If `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` is empty, no LLM is called (Ollama never uses fake mode):
 - The Manager sends your message to **every** agent.
 - Each agent waits 3 seconds and returns a canned result.
 
@@ -104,7 +118,7 @@ A sub-agent definition. Created by the user, fully data-driven. There is no code
 | `id` | int | PK |
 | `name` | str | Shown to the Manager and used to name its tool |
 | `role_prompt` | str | The agent's system prompt (who it is, what it does) |
-| `model` | str | Anthropic model id, default `claude-sonnet-5-5` |
+| `model` | str | Model name, optionally `provider:model`. Default: `DEFAULT_AGENT_MODEL` or the provider default |
 | `skills` | list[str] (JSON) | Names of `Skill` rows; each resolves to real tools (see 6.6) |
 | `created_at` | datetime (UTC) | |
 
@@ -387,3 +401,38 @@ Rules:
 - **No migrations**: `create_all` only creates missing tables. It won't alter existing ones when models change (delete `mrceo.db` in dev).
 - **Tasks in flight are lost on restart**: a task left `pending`/`running` when the server stops is never resumed or marked failed.
 - **No task cancellation or retry** endpoints.
+
+---
+
+## 9. Roadmap: sub-agent ↔ sub-agent collaboration (TODO)
+
+**Today:** hub-and-spoke. Sub-agents are isolated (they only have their skills as tools) and every handoff goes through the Manager: the `[UPDATE]` message comes back, the Manager reads it, then delegates the next step. This costs one Manager LLM call per hop and the Manager may paraphrase away detail. It is fine for linear pipelines (research → write → review).
+
+Options for letting agents work with each other, in recommended order:
+
+- [ ] **Option 2: direct peer calls (`ask_agent`) — recommended next.**
+  - Give sub-agents an `ask_agent(name, question)` tool (plus `list_agents`). It creates a child `Task` for the target agent, runs it inline and returns the result to the caller, with no Manager `[UPDATE]`.
+  - Add `parent_task_id` and `depth` to `Task`; reject calls past `depth >= 3` and calls to self or into a cycle.
+  - Add an allowlist on `Agent` (e.g. `can_contact: list[int]`) so the Manager/user controls who may talk to whom.
+  - Add a per-task call budget (max peer calls) to stop cost blowups and A↔B loops.
+  - Show child tasks under their parent in the UI so work stays visible.
+- [ ] **Option 3: shared workspace (blackboard).** Agents read/write shared artifacts per thread (files, notes, DB rows) and see each other's outputs without calling each other. Good for large outputs (documents, code); not interactive. Add once agents start passing big artifacts.
+- [ ] **Option 1 stays as the default** for planning and tracking: the Manager owns the tasklist, and peer calls are an optimisation, not a replacement.
+
+## 10. Test notes: local Ollama
+
+### 2026-10-20: `deepseek-r1:7b` (CPU only): flow NOT verified
+
+- The Manager wrote a plan in prose and made no tool calls (`tasks: []`, `todos: []`) after 3m16s. r1 is weak at tool calling, and Ollama's default 4096 context is small for the Manager prompt plus tool schemas. The model has since been removed.
+
+### 2026-10-21: `bonsai-2:4b` (GTX 1650 Ti, 4 GB VRAM): flow verified
+
+Setup: `LLM_PROVIDER=ollama`, `MANAGER_MODEL=bonsai-2:4b`, `DEFAULT_AGENT_MODEL=bonsai-2:4b`, one agent "Calculator" with the `calculator` skill, fresh DB.
+
+- Asked the Manager to have the Calculator compute `(17*23)+5`. The Manager called `add_todo` + `delegate`, the sub-agent ran in the background and returned `396` (correct), the `[UPDATE]` came back, the Manager completed the todo and told the user. Whole round trip about 2m20s.
+- **Bug found:** the model called `add_todo` and then `delegate` *without* `todo_id`, so `_dispatch` created a second todo. Result: todo #1 `done`, todo #2 `todo` forever (duplicate). Small models skip optional args.
+- TODOs:
+  - [ ] In `_dispatch`, if `todo_id` is missing, reuse the thread's newest unlinked `todo` item with the same/similar title instead of always creating a new one.
+  - [ ] Re-test with a larger or less quantized model (this one is Q2_0) for multi-agent plans and harder tasks.
+  - [ ] Try a larger context for Ollama (`num_ctx`) in `make_model`.
+  - [ ] Strip r1-style `<think>` content from replies if a reasoning model is used.

@@ -103,7 +103,7 @@ async def _run_manager(
 ) -> str:
     tasklist = todos.format_tasklist(await todos.list_todos(session, thread_id))
     manager = create_agent(
-        model=make_model(settings.manager_model),
+        model=make_model(settings.resolved_manager_model),
         tools=[_delegate_tool(a, thread_id, created) for a in agents]
         + build_tasklist_tools(thread_id),
         system_prompt=MANAGER_PROMPT.format(tasklist=tasklist),
@@ -127,7 +127,7 @@ async def handle_message(
     await save_message(session, thread_id, "user", message)
 
     async with _lock(thread_id):
-        if not settings.anthropic_api_key:
+        if settings.fake_mode:
             # Fake mode: send the instruction to every agent.
             for a in agents:
                 created.append(await _dispatch(session, a, message, thread_id, None))
@@ -156,7 +156,7 @@ async def notify_task_finished(task_id: int) -> None:
 
             async with _lock(thread_id):
                 await save_message(session, thread_id, "system", update)
-                if not settings.anthropic_api_key:
+                if settings.fake_mode:
                     # Fake manager: same rule as the real one, done only on success.
                     todo = await todos.todo_for_task(session, task.id)
                     if todo and ok:

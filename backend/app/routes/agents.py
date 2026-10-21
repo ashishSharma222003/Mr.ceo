@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import delete, select, update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from ..config import settings
 from ..db import get_session
 from ..models import Agent, Task, Todo
 from ..schemas import AgentCreate, AgentUpdate
@@ -23,7 +24,9 @@ async def list_agents(session: AsyncSession = Depends(get_session)):
 @router.post("", response_model=Agent, status_code=201)
 async def create_agent(body: AgentCreate, session: AsyncSession = Depends(get_session)):
     await _check_skills(session, body.skills)
-    agent = Agent(**body.model_dump())
+    data = body.model_dump()
+    data["model"] = data["model"] or settings.resolved_agent_model
+    agent = Agent(**data)
     session.add(agent)
     await session.commit()
     await session.refresh(agent)
