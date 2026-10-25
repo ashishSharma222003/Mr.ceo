@@ -5,17 +5,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import SessionLocal, init_db
+from .services import events, manager
 from .services.skills import seed_skills
-from .routes import agents, chat, skills, tasks, todos
+from .routes import agents, approvals, chat, skills, tasks, todos
 from .services.memory import close_checkpointer, init_checkpointer
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_db()
+    await events.prune()
     async with SessionLocal() as session:
         await seed_skills(session)
     await init_checkpointer()
+    manager.spawn(manager.recover())  # resume work a restart cut off
     yield
     await close_checkpointer()
 
@@ -29,7 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (agents.router, skills.router, tasks.router, todos.router, chat.router):
+for r in (agents.router, approvals.router, skills.router, tasks.router, todos.router, chat.router):
     app.include_router(r, prefix="/api")
 
 

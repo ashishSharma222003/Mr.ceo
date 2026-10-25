@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -24,5 +24,7 @@ async def get_task(task_id: int, session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/events")
-async def stream_events():
-    return EventSourceResponse(events.subscribe())
+async def stream_events(last_event_id: str | None = Header(default=None)):
+    # The browser's EventSource re-sends the last id it saw when it reconnects.
+    last = int(last_event_id) if last_event_id and last_event_id.isdigit() else None
+    return EventSourceResponse(events.subscribe(last))

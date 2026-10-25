@@ -4,7 +4,42 @@ A platform where users create **sub-agents with specific roles or skills**, then
 
 ## Status
 
-> Idea stage. No code yet. This README is updated as the project progresses.
+> Working prototype: FastAPI backend (Manager + sub-agents, SSE) and a Next.js frontend (tasks, Manager chat, sub-agent conversations). This README is updated as the project progresses.
+
+## Getting Started
+
+Requirements: Python 3.11+ and Node.js 20+. Run the backend and the frontend in two terminals.
+
+**1. Backend** (http://localhost:8000, API docs at `/docs`)
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+With no `ANTHROPIC_API_KEY` the backend runs in fake mode (no LLM calls), so you can try the whole flow for free. For real models, create `backend/.env`:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+# or use a local model:
+# LLM_PROVIDER=ollama
+```
+
+**2. Frontend** (http://localhost:3000)
+
+```bash
+cd frontend
+cp .env.example .env.local       # NEXT_PUBLIC_API_URL, default http://localhost:8000
+npm install
+npm run dev
+```
+
+Open http://localhost:3000, create a sub-agent with the **+** in the right pane, then message the Manager.
+
+Other frontend commands: `npm run typecheck`, `npm run build && npm start`.
 
 ## The Idea
 
@@ -77,17 +112,11 @@ User ─► API ─► Manager (LLM: plan + route)
 - [ ] Auth
 - [ ] Limits and safety: per-task step, token, and time caps; human approval for risky actions
 
-## Open Questions
-
-- Auth in v1 or later?
-- LangGraph or Claude Agent SDK for the agent layer?
-- Single-user first, or multi-tenant from the start?
-
 ## Project Structure
 
 ```
 Mr.ceo/
-├── backend/     # FastAPI service (empty for now)
-├── frontend/    # Next.js app (empty for now)
+├── backend/     # FastAPI service (see backend/README.md)
+├── frontend/    # Next.js app (see frontend/README.md)
 └── README.md
 ```

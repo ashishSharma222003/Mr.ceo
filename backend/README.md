@@ -48,14 +48,14 @@ uvicorn app.main:app --reload --port 8000
 | `LLM_PROVIDER` | `anthropic` | `anthropic` or `ollama` |
 | `ANTHROPIC_API_KEY` | *(empty)* | With provider `anthropic`, **empty = fake mode** (see below) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server |
-| `MANAGER_MODEL` | provider default | Model for the Manager (`claude-sonnet-5-5` / `llama3.1`) |
+| `MANAGER_MODEL` | provider default | Model for the Manager (`claude-sonnet-5-5` / `bonsai-2:4b`) |
 | `DEFAULT_AGENT_MODEL` | provider default | Model given to agents created without one |
 
 ### Using Ollama
 
 ```bash
 ollama serve                      # if it isn't already running
-ollama pull llama3.1              # pick a model that supports tool calling
+ollama pull bonsai-2:4b            # pick a model that supports tool calling
 # .env
 LLM_PROVIDER=ollama
 ```

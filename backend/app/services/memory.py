@@ -5,7 +5,8 @@ Uses the same SQLite file as the app DB (`settings.database_url`), so checkpoint
 
 Two kinds of thread live here:
   - Manager thread:   `<thread_id>`            (user <-> Manager)
-  - Sub-agent thread: `<thread_id>:<agent_id>` (Manager <-> one sub-agent)
+  - Sub-agent thread: `<thread_id>:<agent_id>:<todo_id>` (Manager <-> one sub-agent, for one tasklist
+                      item: reworking an item continues it, other items start with a clean memory)
 Agent config (prompt, skills) is NOT stored here; it is read fresh from the DB each run.
 """
 import aiosqlite
@@ -44,8 +45,8 @@ def get_checkpointer() -> AsyncSqliteSaver:
     return _saver
 
 
-def agent_thread_id(manager_thread_id: str, agent_id: int) -> str:
-    return f"{manager_thread_id}:{agent_id}"
+def agent_thread_id(manager_thread_id: str, agent_id: int, todo_id: int | str) -> str:
+    return f"{manager_thread_id}:{agent_id}:{todo_id}"
 
 
 async def save_message(
@@ -54,7 +55,11 @@ async def save_message(
     role: str,
     content: str,
     agent_id: int | None = None,
-) -> None:
-    """Persist one chat message (role: user | manager | agent)."""
-    session.add(ChatMessage(thread_id=thread_id, role=role, content=content, agent_id=agent_id))
+    todo_id: int | None = None,
+) -> ChatMessage:
+    """Persist one chat message (role: user | manager | agent | system)."""
+    msg = ChatMessage(thread_id=thread_id, role=role, content=content, agent_id=agent_id, todo_id=todo_id)
+    session.add(msg)
     await session.commit()
+    await session.refresh(msg)
+    return msg

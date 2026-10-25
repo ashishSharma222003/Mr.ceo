@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "ollama": "llama3.1"}
+_DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "ollama": "bonsai-2:4b"}
 
 
 class Settings(BaseSettings):

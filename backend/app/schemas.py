@@ -1,3 +1,6 @@
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel
 
 from .models import Task, Todo
@@ -22,6 +25,7 @@ class AgentUpdate(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     thread_id: str | None = None  # omit to start a new conversation
+    todo_id: int | None = None  # the task this message is about (e.g. a change request)
 
 
 class ChatResponse(BaseModel):
@@ -29,6 +33,13 @@ class ChatResponse(BaseModel):
     reply: str
     tasks: list[Task]
     todos: list[Todo] = []
+
+
+class ThreadSummary(BaseModel):
+    thread_id: str
+    title: str  # first user message, shortened
+    message_count: int
+    updated_at: datetime
 
 
 class SkillCreate(BaseModel):
@@ -51,9 +62,23 @@ class SkillUpdate(BaseModel):
 
 class TodoCreate(BaseModel):
     title: str
+    description: str = ""
 
 
 class TodoUpdate(BaseModel):
-    """Users may only rename. Completion belongs to the Manager."""
+    """Users may edit the text only. Completion belongs to the Manager."""
 
-    title: str
+    title: str | None = None
+    description: str | None = None
+
+
+class DecisionIn(BaseModel):
+    """The user's answer to one pending tool call, in the order the calls were listed."""
+
+    type: Literal["approve", "edit", "reject"]
+    edited_args: dict | None = None  # for "edit": the full replacement arguments
+    message: str | None = None  # for "reject": why, shown to the Manager
+
+
+class ApprovalResolve(BaseModel):
+    decisions: list[DecisionIn]
