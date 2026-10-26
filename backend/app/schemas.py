@@ -11,6 +11,7 @@ class AgentCreate(BaseModel):
     role_prompt: str
     model: str | None = None  # empty = DEFAULT_AGENT_MODEL / provider default
     skills: list[str] = []
+    thread_id: str | None = None  # set: private to that chat (its own team); omit for the shared library
 
 
 class AgentUpdate(BaseModel):
@@ -35,11 +36,17 @@ class ChatResponse(BaseModel):
     todos: list[Todo] = []
 
 
-class ThreadSummary(BaseModel):
-    thread_id: str
-    title: str  # first user message, shortened
-    message_count: int
+class ThreadOut(BaseModel):
+    id: str
+    title: str
+    team: str
+    open_tasks: int = 0  # tasklist items not done yet
+    created_at: datetime
     updated_at: datetime
+
+
+class ThreadCreate(BaseModel):
+    team: Literal["shared", "own"] = "shared"  # use the existing sub-agents, or start with none
 
 
 class SkillCreate(BaseModel):

@@ -4,7 +4,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { referenceTodo, send, useStore } from '@/lib/store';
 import type { ChatMessage } from '@/lib/types';
 import ApprovalCard from './ApprovalCard';
-import { TaskChip } from './bits';
+import { TaskChip, useTeam } from './bits';
 import { ArrowUp } from './icons';
 import Message from './Message';
 import Text from './Text';
@@ -27,6 +27,8 @@ export default function ChatView() {
   const approval = useStore((s) => s.approval);
   const reference = useStore((s) => s.reference);
   const chat = useMemo(() => messages.filter(isChat), [messages]);
+  const { thread, team } = useTeam();
+  const building = thread?.team === 'own' && team.length === 0;
   const [draft, setDraft] = useState('');
   const scroller = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
@@ -81,7 +83,11 @@ export default function ChatView() {
         {empty ? (
           <div className="hero">
             <h1>What should we get done?</h1>
-            <p>The Manager plans the work, hands it to your sub-agents and checks the results.</p>
+            <p>
+              {building
+                ? 'This chat has its own team, and it’s empty. Tell the Manager what you need: it proposes the sub-agents to build, and you approve each one.'
+                : 'The Manager plans the work, hands it to your sub-agents and checks the results.'}
+            </p>
           </div>
         ) : (
           <ol className="thread" aria-live="polite">

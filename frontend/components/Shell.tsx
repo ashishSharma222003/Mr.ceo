@@ -4,12 +4,13 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { memo, useEffect, useMemo } from 'react';
-import { boot, useStore } from '@/lib/store';
+import { boot, openChat, RECENT_CHATS, showNewChat, useStore } from '@/lib/store';
 import type { Todo } from '@/lib/types';
 import { Dot, useTodoState } from './bits';
-import { AgentsIcon, ChatIcon, TasksIcon } from './icons';
+import { AgentsIcon, ChatIcon, ChatsIcon, Compose, TasksIcon } from './icons';
 
 const AgentForm = dynamic(() => import('./AgentForm'), { ssr: false });
+const NewChat = dynamic(() => import('./NewChat'), { ssr: false });
 
 const SideTask = memo(function SideTask({ todo, active }: { todo: Todo; active: boolean }) {
   const state = useTodoState(todo);
@@ -27,6 +28,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const live = useStore((s) => s.live);
   const todos = useStore((s) => s.todos);
+  const threads = useStore((s) => s.threads);
+  const threadId = useStore((s) => s.threadId);
 
   useEffect(() => void boot(), []);
 
@@ -43,6 +46,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
   const nav = [
     { href: '/', label: 'Chat', icon: <ChatIcon />, on: path === '/' },
+    { href: '/chats', label: 'All chats', icon: <ChatsIcon />, on: path.startsWith('/chats') },
     { href: '/tasks', label: 'Tasks', icon: <TasksIcon />, on: path.startsWith('/tasks'), badge: toApprove },
     { href: '/agents', label: 'Agents', icon: <AgentsIcon />, on: path.startsWith('/agents') },
   ];
@@ -59,6 +63,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <span className="brand-name">Mr.ceo</span>
         </div>
         <nav className="side-nav" aria-label="Main">
+          <button className="nav-item new-chat" title="New chat" onClick={() => showNewChat(true)}>
+            <Compose />
+            <span>New chat</span>
+          </button>
           {nav.map((n) => (
             <Link
               key={n.href}
@@ -77,6 +85,30 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
         </nav>
+        {!rail && threads.length > 0 && (
+          <section className="side-section side-chats" aria-label="Recent chats">
+            <h2>Recent chats</h2>
+            <ul>
+              {threads.slice(0, RECENT_CHATS).map((t) => (
+                <li key={t.id}>
+                  <Link
+                    className="side-task"
+                    href="/"
+                    data-current={t.id === threadId}
+                    onClick={() => void openChat(t.id)}
+                  >
+                    <span>{t.title}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            {threads.length > RECENT_CHATS && (
+              <Link className="side-all" href="/chats">
+                See all chats
+              </Link>
+            )}
+          </section>
+        )}
         {!rail && open.length > 0 && (
           <section className="side-section" aria-label="Open tasks">
             <h2>Open tasks</h2>
@@ -94,6 +126,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       </aside>
       <main className="main">{children}</main>
       <AgentForm />
+      <NewChat />
     </div>
   );
 }

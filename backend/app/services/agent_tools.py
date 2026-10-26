@@ -10,8 +10,8 @@ from sqlmodel import select
 
 from ..config import settings
 from ..db import SessionLocal
-from ..models import Agent, Skill
-from . import events
+from ..models import Agent, Skill, Thread
+from . import events, threads
 from .skills import unknown_skills, validate_skill
 
 GATED = ("create_subagent", "update_subagent", "create_skill", "update_skill")
@@ -21,15 +21,16 @@ def _describe_agent(a: Agent) -> str:
     return f"#{a.id} '{a.name}' (model {a.model}; skills: {', '.join(a.skills) or 'none'}): {a.role_prompt}"
 
 
-async def list_agents_text() -> str:
-    async with SessionLocal() as s:
-        agents = (await s.exec(select(Agent))).all()
+def agents_text(agents: list[Agent]) -> str:
     return "\n".join(_describe_agent(a) for a in agents) or "(none)"
 
 
-def build_agent_tools() -> list[StructuredTool]:
+def build_agent_tools(thread_id: str) -> list[StructuredTool]:
+    """Tools for the Manager of one conversation: it sees and edits only that chat's team."""
+
     async def list_agents() -> str:
-        return await list_agents_text()
+        async with SessionLocal() as s:
+            return agents_text(await threads.team_agents(s, thread_id))
 
     async def list_skills() -> str:
         async with SessionLocal() as s:
@@ -44,7 +45,8 @@ def build_agent_tools() -> list[StructuredTool]:
             if bad := await unknown_skills(s, skills):
                 return f"Unknown skills {bad}. Call list_skills, or create_skill first."
             agent = Agent(
-                name=name, role_prompt=role_prompt, skills=skills, model=model or settings.resolved_agent_model
+                name=name, role_prompt=role_prompt, skills=skills, model=model or settings.resolved_agent_model,
+                thread_id=threads.owner_of_new_agent(await s.get(Thread, thread_id)),
             )
             s.add(agent)
             await s.commit()
@@ -61,8 +63,8 @@ def build_agent_tools() -> list[StructuredTool]:
     ) -> str:
         async with SessionLocal() as s:
             agent = await s.get(Agent, agent_id)
-            if not agent:
-                return f"No sub-agent #{agent_id}."
+            if not agent or not threads.in_team(await s.get(Thread, thread_id), agent):
+                return f"No sub-agent #{agent_id} in this chat's team. Call list_agents."
             if skills is not None and (bad := await unknown_skills(s, skills)):
                 return f"Unknown skills {bad}. Call list_skills, or create_skill first."
             for key, value in dict(name=name, role_prompt=role_prompt, skills=skills, model=model).items():
@@ -121,7 +123,7 @@ def build_agent_tools() -> list[StructuredTool]:
 
     mk = StructuredTool.from_function
     return [
-        mk(coroutine=list_agents, name="list_agents", description="List all sub-agents with their ids, roles and skills."),
+        mk(coroutine=list_agents, name="list_agents", description="List the sub-agents of this chat's team with their ids, roles and skills."),
         mk(coroutine=list_skills, name="list_skills", description="List the skills (tools) a sub-agent can be given."),
         mk(coroutine=create_subagent, name="create_subagent",
            description="Create a new sub-agent for work no existing one fits. Needs the user's approval. "

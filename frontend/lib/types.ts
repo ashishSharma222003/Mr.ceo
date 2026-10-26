@@ -7,6 +7,7 @@ export interface Agent {
   role_prompt: string;
   model: string;
   skills: string[];
+  thread_id: string | null; // set: belongs only to that chat (its own team)
   created_at: string;
 }
 
@@ -47,10 +48,16 @@ export interface ChatMessage {
   created_at: string;
 }
 
-export interface ThreadSummary {
-  thread_id: string;
+/** "shared": works with the sub-agents you already have. "own": starts with none; the ones made in it stay in it. */
+export type Team = 'shared' | 'own';
+
+/** A conversation with the Manager. */
+export interface Thread {
+  id: string;
   title: string;
-  message_count: number;
+  team: Team;
+  open_tasks: number; // tasklist items not done yet
+  created_at: string;
   updated_at: string;
 }
 
@@ -93,4 +100,5 @@ export interface AgentInput {
   role_prompt: string;
   model?: string | null;
   skills: string[];
+  thread_id?: string | null;
 }

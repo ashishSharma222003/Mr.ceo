@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { createContext, memo, useContext } from 'react';
-import { useStore } from '@/lib/store';
+import { createContext, memo, useContext, useMemo } from 'react';
+import { inTeam, useStore } from '@/lib/store';
 import { STATE_LABEL, todoState, type TodoState } from '@/lib/status';
 import type { Todo } from '@/lib/types';
 import { Check, X } from './icons';
@@ -13,6 +13,14 @@ export const initials = (name: string) =>
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase() ?? '')
     .join('');
+
+/** The open chat and the sub-agents that work in it. */
+export function useTeam() {
+  const agents = useStore((s) => s.agents);
+  const thread = useStore((s) => s.threads.find((t) => t.id === s.threadId));
+  const team = useMemo(() => agents.filter((a) => inTeam(thread, a)), [agents, thread]);
+  return { thread, team };
+}
 
 /** Live status of a tasklist item, combining the todo with its latest sub-agent task. */
 export function useTodoState(todo: Todo | undefined): TodoState {

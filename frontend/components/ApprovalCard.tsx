@@ -67,14 +67,24 @@ export default function ApprovalCard({ approval }: { approval: Approval }) {
       <div className="approval-buttons">
         {editing ? (
           <>
-            <button className="pill" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
-            <button className="pill primary" disabled={busy} onClick={saveEdit}>Approve changes</button>
+            <button className="pill" disabled={busy} onClick={() => setEditing(false)}>
+              Cancel
+            </button>
+            <button className="pill primary" disabled={busy} onClick={saveEdit}>
+              Approve changes
+            </button>
           </>
         ) : (
           <>
-            <button className="pill danger" disabled={busy} onClick={reject}>Reject</button>
-            <button className="pill" disabled={busy} onClick={() => setEditing(true)}>Edit</button>
-            <button className="pill primary" disabled={busy} onClick={approve}>Approve</button>
+            <button className="pill danger" disabled={busy} onClick={reject}>
+              Reject
+            </button>
+            <button className="pill" disabled={busy} onClick={() => setEditing(true)}>
+              Edit
+            </button>
+            <button className="pill primary" disabled={busy} onClick={approve}>
+              Approve
+            </button>
           </>
         )}
       </div>

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { closeForm, deleteAgent, loadSkills, saveAgent, useStore } from '@/lib/store';
 
-function Fields({ id }: { id?: number }) {
+function Fields({ id, threadId }: { id?: number; threadId?: string }) {
   const agent = useStore((s) => s.agents.find((a) => a.id === id));
   const skills = useStore((s) => s.skills);
   const [name, setName] = useState(agent?.name ?? '');
@@ -32,10 +32,21 @@ function Fields({ id }: { id?: number }) {
       method="dialog"
       onSubmit={(e) => {
         e.preventDefault();
-        void run(() => saveAgent(id, { name: name.trim(), role_prompt: prompt.trim(), model: model.trim(), skills: picked }));
+        void run(() =>
+          saveAgent(id, {
+            name: name.trim(),
+            role_prompt: prompt.trim(),
+            model: model.trim(),
+            skills: picked,
+            ...(id == null && threadId && { thread_id: threadId }),
+          }),
+        );
       }}
     >
       <h3>{id == null ? 'New sub-agent' : 'Edit sub-agent'}</h3>
+      {(threadId || agent?.thread_id) && (
+        <p className="dialog-lead">Part of this chat&rsquo;s own team: other chats don&rsquo;t see it.</p>
+      )}
       <label className="field">
         Name
         <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus placeholder="Researcher" />
@@ -52,7 +63,11 @@ function Fields({ id }: { id?: number }) {
       </label>
       <label className="field">
         Model
-        <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default (e.g. anthropic:claude-sonnet-5-5)" />
+        <input
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder="Default (e.g. anthropic:claude-sonnet-5-5)"
+        />
       </label>
       {skills.length > 0 && (
         <fieldset className="field" style={{ border: 0, padding: 0 }}>
@@ -63,7 +78,9 @@ function Fields({ id }: { id?: number }) {
                 <input
                   type="checkbox"
                   checked={picked.includes(s.name)}
-                  onChange={(e) => setPicked((p) => (e.target.checked ? [...p, s.name] : p.filter((n) => n !== s.name)))}
+                  onChange={(e) =>
+                    setPicked((p) => (e.target.checked ? [...p, s.name] : p.filter((n) => n !== s.name)))
+                  }
                 />
                 {s.name}
               </label>
@@ -71,7 +88,11 @@ function Fields({ id }: { id?: number }) {
           </div>
         </fieldset>
       )}
-      {error && <div className="err" role="alert" style={{ margin: 0 }}>{error}</div>}
+      {error && (
+        <div className="err" role="alert" style={{ margin: 0 }}>
+          {error}
+        </div>
+      )}
       <div className="actions">
         {id != null && (
           <button
@@ -108,7 +129,7 @@ export default function AgentForm() {
 
   return (
     <dialog ref={ref} onClose={closeForm} onClick={(e) => e.target === ref.current && closeForm()}>
-      {form && <Fields key={form.id ?? 'new'} id={form.id} />}
+      {form && <Fields key={form.id ?? 'new'} id={form.id} threadId={form.threadId} />}
     </dialog>
   );
 }

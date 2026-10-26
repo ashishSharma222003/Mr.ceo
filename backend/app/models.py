@@ -16,12 +16,27 @@ class TaskStatus(str, Enum):
     failed = "failed"
 
 
+class Thread(SQLModel, table=True):
+    """A conversation with the Manager.
+
+    team="shared": the Manager works with the shared sub-agent library (and adds new ones to it).
+    team="own":    the chat starts with no sub-agents; the ones made in it belong to it alone.
+    """
+
+    id: str = Field(primary_key=True)
+    title: str = "New chat"  # becomes the first user message, shortened
+    team: str = "shared"
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
 class Agent(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
     role_prompt: str
     model: str = "claude-sonnet-5-5"
     skills: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    thread_id: str | None = Field(default=None, index=True)  # set: private to that "own team" chat
     created_at: datetime = Field(default_factory=_now)
 
 

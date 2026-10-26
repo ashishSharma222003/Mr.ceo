@@ -6,7 +6,7 @@ import { focusTodo, openForm, useStore } from '@/lib/store';
 import { ago } from '@/lib/status';
 import type { Agent, Task } from '@/lib/types';
 import Attempt from './Attempt';
-import { initials, OpenTask, StatePill, useTodoState } from './bits';
+import { initials, OpenTask, StatePill, useTeam, useTodoState } from './bits';
 import { ChevronLeft, ChevronRight, Plus } from './icons';
 
 /** Opens a task in place (workspace) or links to its page. */
@@ -130,10 +130,13 @@ function TaskFocus({ id }: { id: number }) {
 /** Right pane of the chat workspace: who the sub-agents are and what they are doing, or the
  * conversation of the task the user opened. */
 export default function AgentPane({ onCollapse }: { onCollapse: () => void }) {
-  const agents = useStore((s) => s.agents);
+  const { thread, team: agents } = useTeam();
   const tasks = useStore((s) => s.tasks);
   const threadId = useStore((s) => s.threadId);
   const focus = useStore((s) => s.focus);
+  const own = thread?.team === 'own';
+  // In an own-team chat, new sub-agents belong to it; elsewhere they join the shared library.
+  const create = () => openForm(own ? { threadId } : {});
 
   const { current, last, recent } = useMemo(() => {
     const list = Object.values(tasks)
@@ -153,10 +156,10 @@ export default function AgentPane({ onCollapse }: { onCollapse: () => void }) {
   return (
     <>
       <div className="pane-head">
-        <h2>Sub-agents</h2>
+        <h2>{own ? 'Team' : 'Sub-agents'}</h2>
         {agents.length > 0 && <span className="count">{working ? `${working} working` : `${agents.length}`}</span>}
         <span className="spacer" />
-        <button className="icon-btn" aria-label="New sub-agent" title="New sub-agent" onClick={() => openForm({})}>
+        <button className="icon-btn" aria-label="New sub-agent" title="New sub-agent" onClick={create}>
           <Plus />
         </button>
         <button className="icon-btn" aria-label="Collapse sub-agents" title="Collapse" onClick={onCollapse}>
@@ -168,9 +171,11 @@ export default function AgentPane({ onCollapse }: { onCollapse: () => void }) {
           <TaskFocus id={focus} />
         ) : agents.length === 0 ? (
           <div className="empty small">
-            <strong>No sub-agents</strong>
-            Create one, or ask the Manager to propose one.
-            <button className="pill" onClick={() => openForm({})}>
+            <strong>{own ? 'Build your team' : 'No sub-agents'}</strong>
+            {own
+              ? 'This chat starts with no sub-agents. Ask the Manager to propose the ones the work needs, or add one yourself. They stay in this chat.'
+              : 'Create one, or ask the Manager to propose one.'}
+            <button className="pill" onClick={create}>
               New sub-agent
             </button>
           </div>

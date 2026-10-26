@@ -7,6 +7,7 @@ import { initials } from './bits';
 import { Plus } from './icons';
 
 const Card = memo(function Card({ agent, done, active }: { agent: Agent; done: number; active: number }) {
+  const chat = useStore((s) => (agent.thread_id ? s.threads.find((t) => t.id === agent.thread_id)?.title : undefined));
   return (
     <li>
       <button className="agent-card" onClick={() => openForm({ id: agent.id })} aria-label={`Edit ${agent.name}`}>
@@ -18,7 +19,11 @@ const Card = memo(function Card({ agent, done, active }: { agent: Agent; done: n
             <b>{agent.name}</b>
             <span>{agent.model}</span>
           </span>
-          {active > 0 && <span className="state-pill" data-state="running">Working</span>}
+          {active > 0 && (
+            <span className="state-pill" data-state="running">
+              Working
+            </span>
+          )}
         </span>
         <span className="agent-role">{agent.role_prompt}</span>
         {agent.skills.length > 0 && (
@@ -32,6 +37,7 @@ const Card = memo(function Card({ agent, done, active }: { agent: Agent; done: n
         )}
         <span className="agent-foot">
           {done} task{done === 1 ? '' : 's'} done
+          {chat && <> · Only in &ldquo;{chat}&rdquo;</>}
         </span>
       </button>
     </li>
@@ -64,8 +70,8 @@ export default function AgentsView() {
           </button>
         </header>
         <p className="page-lead">
-          Sub-agents do the work the Manager hands out. Give each one a clear role and the skills it needs.
-          The Manager can also propose new ones; you approve them in Chat.
+          Sub-agents do the work the Manager hands out. Give each one a clear role and the skills it needs. The Manager
+          can also propose new ones; you approve them in Chat.
         </p>
         {loaded && agents.length === 0 ? (
           <div className="empty">

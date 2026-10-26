@@ -24,9 +24,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from ..config import settings
 from ..db import SessionLocal
-from ..models import Agent, Approval, Task, TaskStatus, Todo, TodoStatus
-from . import events, todos
-from .agent_tools import GATED, build_agent_tools, list_agents_text
+from ..models import Agent, Approval, Task, TaskStatus, Thread, Todo, TodoStatus
+from . import events, threads, todos
+from .agent_tools import GATED, agents_text, build_agent_tools
 from .llm import make_model
 from .memory import get_checkpointer, save_message
 from .runner import run_task
@@ -83,6 +83,11 @@ NO_AGENTS_NOTE = (
     "it with create_subagent (the user approves); otherwise answer directly.\n\n"
 )
 
+OWN_TEAM_NOTE = (
+    "The user chose to build their own team for this conversation: only the sub-agents listed below "
+    "exist here, and any you create belong to this conversation alone.\n\n"
+)
+
 
 def _lock(thread_id: str) -> asyncio.Lock:
     return _locks.setdefault(thread_id, asyncio.Lock())
@@ -127,8 +132,8 @@ def _delegate_tool(thread_id: str, created: list[Task]) -> StructuredTool:
     async def delegate_to_agent(agent_id: int, instruction: str, todo_id: int | None = None) -> str:
         async with SessionLocal() as session:  # own session: tool calls may run in parallel
             agent = await session.get(Agent, agent_id)
-            if not agent:
-                return f"No sub-agent #{agent_id}. Call list_agents."
+            if not agent or not threads.in_team(await session.get(Thread, thread_id), agent):
+                return f"No sub-agent #{agent_id} in this chat's team. Call list_agents."
             task = await _dispatch(session, agent, instruction, thread_id, todo_id)
         created.append(task)
         return f"Task #{task.todo_id} started on '{agent.name}'. It runs in the background."
@@ -158,13 +163,15 @@ async def _run_manager(
 ) -> str:
     """Run the Manager on a user message / update (str) or resume it after an approval (Command)."""
     tasklist = todos.format_tasklist(await todos.list_todos(session, thread_id))
+    thread = await session.get(Thread, thread_id)
+    own = OWN_TEAM_NOTE if thread and thread.team == "own" else ""
     manager = create_agent(
         model=make_model(settings.resolved_manager_model),
-        tools=[_delegate_tool(thread_id, created)] + build_agent_tools() + build_tasklist_tools(thread_id),
+        tools=[_delegate_tool(thread_id, created)] + build_agent_tools(thread_id) + build_tasklist_tools(thread_id),
         system_prompt=MANAGER_PROMPT.format(
             tasklist=tasklist,
-            agents=await list_agents_text(),
-            agents_note="" if agents else NO_AGENTS_NOTE,
+            agents=agents_text(agents),
+            agents_note=own + ("" if agents else NO_AGENTS_NOTE),
         ),
         middleware=[HumanInTheLoopMiddleware(interrupt_on={name: True for name in GATED})],
         checkpointer=get_checkpointer(),
@@ -214,7 +221,9 @@ def _about(todo: Todo, task: Task | None) -> str:
 async def handle_message(
     session: AsyncSession, message: str, thread_id: str, todo_id: int | None = None
 ) -> tuple[str, list[Task]]:
-    agents = (await session.exec(select(Agent))).all()
+    thread = await threads.ensure(session, thread_id)
+    await threads.touch(session, thread, first_message=message)
+    agents = await threads.team_agents(session, thread_id)
     todo = await todos.get_todo(session, todo_id, thread_id) if todo_id else None
     task = await session.get(Task, todo.task_id) if todo and todo.task_id else None
 
@@ -235,7 +244,7 @@ async def handle_message(
             )
         else:
             text = (_about(todo, task) + message) if todo else message
-            reply = await _run_manager(session, list(agents), thread_id, text, created)
+            reply = await _run_manager(session, agents, thread_id, text, created)
         await save_message(session, thread_id, "manager", reply, todo_id=todo.id if todo else None)
         # Items created while answering this message remember it, so each task page can show
         # the request it came from.
@@ -260,7 +269,7 @@ async def resolve_approval(
         await session.commit()
         await events.publish("approval.resolved", approval.model_dump())
 
-        agents = list((await session.exec(select(Agent))).all())
+        agents = await threads.team_agents(session, thread_id)
         resume = Command(resume={"decisions": decisions})
         reply = await _run_manager(session, agents, thread_id, resume, created)
         await save_message(session, thread_id, "manager", reply)
@@ -306,7 +315,7 @@ async def notify_task_finished(task_id: int) -> None:
                 if settings.fake_mode:
                     reply = f"(fake) Task #{task.todo_id} {'finished' if ok else 'failed'}."
                 else:
-                    agents = list((await session.exec(select(Agent))).all())
+                    agents = await threads.team_agents(session, thread_id)
                     reply = await _run_manager(session, agents, thread_id, update, [])
 
                 # The Manager must decide: submit for approval, or send the work back (a new task
@@ -319,7 +328,7 @@ async def notify_task_finished(task_id: int) -> None:
                         f"[UPDATE] You did not decide on Task #{todo.id} yet. Either call submit_for_review "
                         "if the work meets the requirements, or delegate it again with corrections."
                     )
-                    agents = list((await session.exec(select(Agent))).all())
+                    agents = await threads.team_agents(session, thread_id)
                     reply = await _run_manager(session, agents, thread_id, nudge, []) or reply
                     await session.refresh(todo)
                 if todo and ok and todo.status == TodoStatus.in_progress and todo.task_id == task.id:

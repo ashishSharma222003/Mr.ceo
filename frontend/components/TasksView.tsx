@@ -135,7 +135,13 @@ export default function TasksView() {
         ) : rows.length === 0 ? (
           <div className="empty">
             <strong>
-              {query ? 'No matches' : filter === 'done' ? 'Nothing completed yet' : filter === 'review' ? 'All caught up' : 'No open tasks'}
+              {query
+                ? 'No matches'
+                : filter === 'done'
+                  ? 'Nothing completed yet'
+                  : filter === 'review'
+                    ? 'All caught up'
+                    : 'No open tasks'}
             </strong>
             {!query &&
               (filter === 'done'

@@ -4,7 +4,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from ..config import settings
 from ..db import get_session
-from ..models import Agent, Task, Todo
+from ..models import Agent, Task, Thread, Todo
 from ..schemas import AgentCreate, AgentUpdate
 from ..services.skills import unknown_skills
 
@@ -24,6 +24,8 @@ async def list_agents(session: AsyncSession = Depends(get_session)):
 @router.post("", response_model=Agent, status_code=201)
 async def create_agent(body: AgentCreate, session: AsyncSession = Depends(get_session)):
     await _check_skills(session, body.skills)
+    if body.thread_id and not await session.get(Thread, body.thread_id):
+        raise HTTPException(404, "Chat not found")
     data = body.model_dump()
     data["model"] = data["model"] or settings.resolved_agent_model
     agent = Agent(**data)

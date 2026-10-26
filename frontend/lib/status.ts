@@ -29,8 +29,7 @@ export function ts(s: string): number {
 export const day = (s: string) =>
   new Date(ts(s)).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 
-export const clock = (s: string) =>
-  new Date(ts(s)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+export const clock = (s: string) => new Date(ts(s)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 /** "just now", "5m ago", "3h ago", "2d ago", then a date. */
 export function ago(s: string): string {

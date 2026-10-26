@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import SessionLocal, init_db
-from .services import events, manager
+from .services import events, manager, threads
 from .services.skills import seed_skills
 from .routes import agents, approvals, chat, skills, tasks, todos
 from .services.memory import close_checkpointer, init_checkpointer
@@ -17,6 +17,7 @@ async def lifespan(_: FastAPI):
     await events.prune()
     async with SessionLocal() as session:
         await seed_skills(session)
+        await threads.adopt_legacy(session)
     await init_checkpointer()
     manager.spawn(manager.recover())  # resume work a restart cut off
     yield

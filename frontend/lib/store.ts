@@ -1,11 +1,11 @@
 import { useSyncExternalStore } from 'react';
 import * as api from './api';
-import type { Agent, AgentInput, Approval, ChatMessage, Decision, Skill, Task, Todo } from './types';
+import type { Agent, AgentInput, Approval, ChatMessage, Decision, Skill, Task, Team, Thread, Todo } from './types';
 
-/** The app is a single conversation with the Manager, so there is one fixed thread. */
-export const THREAD = 'main';
+/** Edit an agent (`id`), or create one; `threadId` makes the new one private to that chat. */
+export type FormTarget = { id?: number; threadId?: string } | null;
 
-export type FormTarget = { id?: number } | null;
+const CHAT_KEY = 'mrceo.chat'; // the chat open last time
 
 /** A Manager reply being written right now, fed by live token events. Sub-agents don't stream. */
 export interface Stream {
@@ -17,7 +17,9 @@ export interface Stream {
 interface State {
   loaded: boolean;
   live: boolean;
-  threadId: string;
+  threadId: string; // the open chat ('' until one is chosen)
+  threads: Thread[];
+  newChat: boolean; // the "start a new chat" dialog is open
   agents: Agent[];
   skills: Skill[];
   tasks: Record<number, Task>;
@@ -36,7 +38,9 @@ interface State {
 const initial: State = {
   loaded: false,
   live: false,
-  threadId: THREAD,
+  threadId: '',
+  threads: [],
+  newChat: false,
   agents: [],
   skills: [],
   tasks: {},
@@ -106,8 +110,8 @@ async function loadThread(id: string) {
 }
 
 async function loadShared() {
-  const [agents, tasks] = await Promise.all([api.agents(), api.tasks()]);
-  set({ agents, tasks: Object.fromEntries(tasks.map((t) => [t.id, t])) });
+  const [agents, tasks, threads] = await Promise.all([api.agents(), api.tasks(), api.threads()]);
+  set({ agents, threads, tasks: Object.fromEntries(tasks.map((t) => [t.id, t])) });
 }
 
 let booted = false;
@@ -117,7 +121,13 @@ export async function boot() {
   booted = true;
   try {
     await loadShared();
-    await loadThread(THREAD);
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(CHAT_KEY);
+    } catch {}
+    const pick = state.threads.find((t) => t.id === saved) ?? state.threads[0];
+    if (pick) await openChat(pick.id);
+    else await startChat('shared'); // first run: nothing to choose between yet
   } catch (e) {
     set({ error: `Can't reach the backend (${message(e)})` });
   }
@@ -184,6 +194,7 @@ function connect() {
   });
   on('todo.updated', (t: Todo) => {
     if (t.thread_id === state.threadId) set((s) => ({ todos: upsert(s.todos, t) }));
+    scheduleThreads(); // open-task counts in the chat list
   });
   on('todo.deleted', (t: Todo) => set((s) => ({ todos: s.todos.filter((x) => x.id !== t.id) })));
   on('approval.requested', (a: Approval) => {
@@ -214,7 +225,7 @@ function connect() {
 async function resync() {
   try {
     await loadShared();
-    await loadThread(THREAD);
+    if (state.threadId) await loadThread(state.threadId);
   } catch {}
 }
 
@@ -226,8 +237,8 @@ const upsert = (list: Todo[], t: Todo) =>
 // ---------- chat ----------
 
 export async function send(text: string) {
-  if (state.sending || state.approval || !text.trim()) return;
-  const id = THREAD;
+  if (state.sending || state.approval || !text.trim() || !state.threadId) return;
+  const id = state.threadId;
   const base = state.messages.filter((m) => m.role === 'user' && m.agent_id == null).length;
   const todoId = state.reference ?? undefined;
   set({ sending: true, error: null, pending: { text, base }, reference: null });
@@ -244,6 +255,7 @@ export async function send(text: string) {
   } finally {
     set({ sending: false, pending: null });
     await settle();
+    void loadThreads(); // the title comes from the first message; the list is ordered by activity
   }
 }
 
@@ -264,14 +276,14 @@ export async function resolveApproval(decisions: Decision[]) {
   } finally {
     set({ sending: false });
     await settle();
-    await loadThread(THREAD); // a new approval may have been requested, or agents changed
+    await loadThread(state.threadId); // a new approval may have been requested, or agents changed
   }
 }
 
 // ---------- tasklist ----------
 
 export async function addTodo(title: string) {
-  const id = THREAD;
+  const id = state.threadId;
   if (!title.trim()) return;
   try {
     const t = await api.addTodo(id, title.trim());
@@ -347,5 +359,70 @@ export async function deleteAgent(id: number) {
     tasks: Object.fromEntries(Object.entries(s.tasks).filter(([, t]) => t.agent_id !== id)),
     form: null,
   }));
-  await loadThread(THREAD); // todos/messages of that agent are gone
+  await loadThread(state.threadId); // todos/messages of that agent are gone
+}
+
+// ---------- chats ----------
+
+/** Whether an agent works in a chat: own-team chats use only their own agents, others the shared
+ * library (plus any agent made in them). Mirrors the backend's rule. */
+export const inTeam = (thread: Thread | undefined, a: Agent) =>
+  thread?.team === 'own' ? a.thread_id === thread.id : a.thread_id == null || a.thread_id === thread?.id;
+
+/** Chats listed in the sidebar and the chat header; all of them are on /chats. */
+export const RECENT_CHATS = 5;
+
+async function loadThreads() {
+  try {
+    set({ threads: await api.threads() });
+  } catch {}
+}
+
+let threadTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleThreads() {
+  clearTimeout(threadTimer);
+  threadTimer = setTimeout(() => void loadThreads(), 500);
+}
+
+export async function openChat(id: string) {
+  if (id === state.threadId) return;
+  live = {};
+  set({
+    threadId: id,
+    todos: [],
+    messages: [],
+    approval: null,
+    streams: {},
+    pending: null,
+    reference: null,
+    focus: null,
+    error: null,
+  });
+  try {
+    localStorage.setItem(CHAT_KEY, id);
+  } catch {}
+  await loadThread(id);
+}
+
+export const showNewChat = (open: boolean) => set({ newChat: open });
+
+/** Start a chat with the shared sub-agents, or with an empty team of its own. */
+export async function startChat(team: Team) {
+  const t = await api.createThread(team);
+  set((s) => ({ threads: [t, ...s.threads], newChat: false }));
+  await openChat(t.id);
+}
+
+/** Delete a chat with its tasks, messages and the agents only it had. Throws so the caller can show why. */
+export async function deleteChat(id: string) {
+  await api.deleteThread(id);
+  set((s) => ({
+    threads: s.threads.filter((t) => t.id !== id),
+    agents: s.agents.filter((a) => a.thread_id !== id),
+    tasks: Object.fromEntries(Object.entries(s.tasks).filter(([, t]) => t.thread_id !== id)),
+  }));
+  if (state.threadId !== id) return;
+  const next = state.threads[0];
+  if (next) await openChat(next.id);
+  else await startChat('shared');
 }

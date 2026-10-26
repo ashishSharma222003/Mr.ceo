@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { focusTodo, useStore } from '@/lib/store';
+import { focusTodo, showNewChat, useStore } from '@/lib/store';
 import AgentPane from './AgentPane';
 import { OpenTask } from './bits';
+import ChatSwitcher from './ChatSwitcher';
 import ChatView from './ChatView';
-import { PanelLeft, PanelRight } from './icons';
+import { Compose, PanelLeft, PanelRight } from './icons';
 import TaskPane from './TaskPane';
 
 type Side = 'left' | 'right';
@@ -164,7 +165,10 @@ export default function ChatWorkspace() {
             >
               <PanelLeft />
             </button>
-            <h2>Manager</h2>
+            <ChatSwitcher />
+            <button className="icon-btn" aria-label="New chat" title="New chat" onClick={() => showNewChat(true)}>
+              <Compose />
+            </button>
             <button
               className="icon-btn"
               aria-label={open.right ? 'Hide sub-agents' : 'Show sub-agents'}

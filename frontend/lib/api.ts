@@ -1,4 +1,16 @@
-import type { Agent, Approval, Decision, AgentInput, ChatMessage, ChatResponse, Skill, Task, ThreadSummary, Todo } from './types';
+import type {
+  Agent,
+  Approval,
+  Decision,
+  AgentInput,
+  ChatMessage,
+  ChatResponse,
+  Skill,
+  Task,
+  Team,
+  Thread,
+  Todo,
+} from './types';
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
@@ -31,7 +43,9 @@ export const skills = () => req<Skill[]>('/skills');
 
 export const tasks = () => req<Task[]>('/tasks');
 
-export const threads = () => req<ThreadSummary[]>('/threads');
+export const threads = () => req<Thread[]>('/threads');
+export const createThread = (team: Team) => req<Thread>('/threads', 'POST', { team });
+export const deleteThread = (id: string) => req<void>(`/threads/${id}`, 'DELETE');
 export const messages = (thread: string) => req<ChatMessage[]>(`/chat/${thread}/messages`);
 export const chat = (message: string, thread_id: string, todo_id?: number) =>
   req<ChatResponse>('/chat', 'POST', { message, thread_id, todo_id });
