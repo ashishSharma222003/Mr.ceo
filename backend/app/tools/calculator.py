@@ -20,6 +20,10 @@ def _eval(node: ast.AST) -> float:
     raise ValueError("Unsupported expression")
 
 
-@builtin_tool("calculator", "Evaluate an arithmetic expression, e.g. '(2+3)*4'.")
+@builtin_tool("calculator", "Evaluate an arithmetic expression with + - * / % ** and parentheses, e.g. '(2+3)*4'.")
 def calculator(expression: str) -> str:
-    return str(_eval(ast.parse(expression, mode="eval").body))
+    # Return errors as text so the agent can fix its call instead of the whole task failing.
+    try:
+        return str(_eval(ast.parse(expression.replace("^", "**"), mode="eval").body))
+    except (ValueError, SyntaxError, ZeroDivisionError, OverflowError) as e:
+        return f"Error: {e or 'invalid expression'}. Use only numbers, + - * / % ** and parentheses."

@@ -120,3 +120,6 @@ Mr.ceo/
 ├── frontend/    # Next.js app (see frontend/README.md)
 └── README.md
 ```
+
+![Querry Processing](image.png) 
+![Query compeleted](image-1.png)

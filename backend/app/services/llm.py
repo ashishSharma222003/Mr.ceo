@@ -22,7 +22,7 @@ def make_model(spec: str) -> BaseChatModel:
     if provider == "ollama":
         from langchain_ollama import ChatOllama
 
-        return ChatOllama(model=name, base_url=settings.ollama_base_url)
+        return ChatOllama(model=name, base_url=settings.ollama_base_url, num_ctx=settings.ollama_num_ctx)
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 

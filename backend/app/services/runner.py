@@ -27,6 +27,19 @@ class AgentReport(BaseModel):
         description="One or two short plain sentences, no markdown, no lists: what you did and why the "
         "task counts as complete (or what is missing)."
     )
+    help_request: str = Field(
+        default="",
+        description="Leave empty unless you cannot finish without information or work from another "
+        "specialist. Then say exactly what you need (the question to answer or the work to do).",
+    )
+
+
+HELP_PROMPT = (
+    "\n\nIf you cannot finish without information or work from another specialist, do what you can, "
+    "then put exactly what you need in help_request (or end with a line starting 'NEED HELP:'). "
+    "The Manager will get it from a colleague or the user and send you the answer, so you can finish."
+)
+_NEED_HELP = re.compile(r"^\W*NEED HELP:\s*(.+)", re.I | re.M | re.S)
 
 
 def plain(text: str, limit: int = 280) -> str:
@@ -47,15 +60,22 @@ def _text(content) -> str:
     return content
 
 
-async def _execute(session, agent: Agent, task: Task) -> tuple[str, str]:
-    """Run the sub-agent. Returns (full response, short plain-text summary). Not streamed: only the
-    Manager's replies stream to the user."""
+def _help_in(text: str) -> str | None:
+    """A 'NEED HELP:' line in a plain-text answer (small models may skip the structured field)."""
+    m = _NEED_HELP.search(text)
+    return m.group(1).strip() if m else None
+
+
+async def _execute(session, agent: Agent, task: Task) -> tuple[str, str, str | None]:
+    """Run the sub-agent. Returns (full response, short plain-text summary, help request or None).
+    Not streamed: only the Manager's replies stream to the user."""
     instruction = task.instruction
     if settings.fake_mode:
         # No key configured: keep the prototype usable with a canned result.
         return (
             f"[{agent.name}] (fake, no ANTHROPIC_API_KEY) finished: {instruction}",
             plain(f"{agent.name} finished: {instruction}"),
+            None,
         )
 
     tools, skills_prompt = await load_skills(session, agent.skills)  # DB skills -> LangChain tools (+ MCP)
@@ -64,7 +84,7 @@ async def _execute(session, agent: Agent, task: Task) -> tuple[str, str]:
         return create_agent(
             model=make_model(agent.model),
             tools=tools,
-            system_prompt=agent.role_prompt + skills_prompt,  # config: fresh from DB every run
+            system_prompt=agent.role_prompt + skills_prompt + HELP_PROMPT,  # config: fresh from DB every run
             response_format=ToolStrategy(AgentReport) if structured else None,
             checkpointer=get_checkpointer(),  # history: kept per (manager thread, agent)
         )
@@ -74,12 +94,12 @@ async def _execute(session, agent: Agent, task: Task) -> tuple[str, str]:
     try:
         out = await build(True).ainvoke(inputs, config=config)
         report = out["structured_response"]
-        return report.response, plain(report.summary)
+        return report.response, plain(report.summary), report.help_request.strip() or _help_in(report.response)
     except Exception:  # noqa: BLE001 - e.g. a small local model that can't fill the structure
         log.warning("Structured report failed for agent %s; falling back to plain text", agent.id, exc_info=True)
     out = await build(False).ainvoke(inputs, config=config)
     text = _text(out["messages"][-1].content)
-    return text, plain(text)
+    return text, plain(text), _help_in(text)
 
 
 async def run_task(task_id: int, resume: bool = False) -> None:
@@ -99,7 +119,7 @@ async def run_task(task_id: int, resume: bool = False) -> None:
         try:
             if not resume:  # already in the history from the first attempt
                 await save_message(session, chat_thread, "manager", task.instruction, agent_id=agent.id, todo_id=task.todo_id)
-            task.result, task.summary = await _execute(session, agent, task)
+            task.result, task.summary, task.help_request = await _execute(session, agent, task)
             task.status = TaskStatus.done
             await save_message(session, chat_thread, "agent", task.result, agent_id=agent.id, todo_id=task.todo_id)
         except Exception as e:  # noqa: BLE001

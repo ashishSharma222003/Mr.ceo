@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react';
 import { approveTodo, editTodo, referenceTodo, removeTodo, useStore } from '@/lib/store';
 import { day } from '@/lib/status';
 import type { Todo } from '@/lib/types';
-import Attempt from './Attempt';
+import AttemptList from './Attempt';
 import { StatePill, useTodoState } from './bits';
 import { ChevronLeft, Pencil, Trash } from './icons';
 import Message from './Message';
@@ -65,8 +65,12 @@ export default function TaskView({ id }: { id: number }) {
         .sort((a, b) => a.id - b.id),
     [allTasks, id],
   );
-  const latest = attempts[attempts.length - 1];
+  // The task's own sub-agent; helpers (a colleague answering it) are shown in the history only.
+  const own = attempts.filter((t) => t.helps_task_id == null);
+  const latest = own[own.length - 1];
   const agent = latest && agents.find((a) => a.id === latest.agent_id)?.name;
+  const help = latest && attempts.findLast((t) => t.helps_task_id === latest.id);
+  const helper = help && (agents.find((a) => a.id === help.agent_id)?.name ?? 'Another sub-agent');
 
   // The user <-> Manager conversation about this task: the request that created it (and the
   // Manager's answer), plus every message tagged with it (change requests, reports, reviews).
@@ -141,7 +145,7 @@ export default function TaskView({ id }: { id: number }) {
                   <p className="task-meta">
                     Task #{todo.id}
                     {agent && ` · ${agent}`} · created {day(todo.created_at)}
-                    {attempts.length > 1 && ` · ${attempts.length} attempts`}
+                    {own.length > 1 && ` · ${own.length} attempts`}
                   </p>
                   {todo.description && <p className="task-desc">{todo.description}</p>}
                 </>
@@ -164,7 +168,7 @@ export default function TaskView({ id }: { id: number }) {
 
             {(todo.summary || latest?.result) && (
               <section className="result" data-state={state}>
-                <h2>{state === 'failed' ? 'What went wrong' : 'What was done'}</h2>
+                <h2>{state === 'failed' ? 'What went wrong' : state === 'help' ? 'Work so far' : 'What was done'}</h2>
                 <p>{todo.summary || latest?.summary || (state === 'failed' ? latest?.result : '')}</p>
                 {latest?.result && latest.status === 'done' && (
                   <>
@@ -188,6 +192,27 @@ export default function TaskView({ id }: { id: number }) {
                     ? `${agent ?? 'The sub-agent'} is working on it…`
                     : 'The Manager is reviewing the result…'}
                 </span>
+              </section>
+            )}
+            {state === 'help' && latest && (
+              <section className="result" data-state={state}>
+                <h2>{agent ?? 'The sub-agent'} needs help</h2>
+                <p>{latest.help_request}</p>
+                {help?.status === 'failed' ? (
+                  <p>{helper} couldn&apos;t answer. Ask the Manager to try again or pick someone else.</p>
+                ) : latest.user_question ? (
+                  <p>
+                    The Manager asked you in the chat: “{latest.user_question}” Reply there and your answer goes
+                    to {agent ?? 'the sub-agent'}.
+                  </p>
+                ) : (
+                  <span className="working">
+                    <i />{' '}
+                    {help
+                      ? `The Manager asked ${helper}. The answer goes back to ${agent ?? 'the sub-agent'} automatically…`
+                      : 'The Manager is finding a sub-agent who can help…'}
+                  </span>
+                )}
               </section>
             )}
 
@@ -219,11 +244,7 @@ export default function TaskView({ id }: { id: number }) {
                 <div className="empty">No conversation about this task yet.</div>
               )
             ) : attempts.length ? (
-              <ol className="attempts">
-                {attempts.map((t, i) => (
-                  <Attempt key={t.id} task={t} n={i + 1} />
-                ))}
-              </ol>
+              <AttemptList tasks={attempts} />
             ) : (
               <div className="empty">Not delegated to a sub-agent yet.</div>
             )}

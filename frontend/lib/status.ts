@@ -1,19 +1,23 @@
 import type { Task, Todo } from './types';
 
-export type TodoState = 'todo' | 'running' | 'checking' | 'approval' | 'done' | 'failed';
+export type TodoState = 'todo' | 'running' | 'help' | 'checking' | 'approval' | 'done' | 'failed';
 
 /** One visual state per todo, combining the Manager's todo status with the sub-agent task. */
 export function todoState(todo: Todo, task?: Task): TodoState {
   if (todo.status === 'done') return 'done';
   if (todo.status === 'review') return 'approval';
   if (task?.status === 'failed') return 'failed';
-  if (todo.status === 'in_progress') return task?.status === 'done' ? 'checking' : 'running';
+  if (todo.status === 'in_progress') {
+    if (task?.status !== 'done') return 'running';
+    return task.help_request ? 'help' : 'checking';
+  }
   return 'todo';
 }
 
 export const STATE_LABEL: Record<TodoState, string> = {
   todo: 'To do',
   running: 'Working',
+  help: 'Getting help',
   checking: 'Manager reviewing',
   approval: 'Waiting for your approval',
   done: 'Done',

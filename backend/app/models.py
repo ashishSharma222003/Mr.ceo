@@ -50,6 +50,9 @@ class Task(SQLModel, table=True):
     result: str | None = None  # the sub-agent's full response (for the Manager)
     summary: str | None = None  # short plain-text brief: why it is complete and what was done (for the user)
     notified: bool = False  # the Manager has been told how it ended (so a restart doesn't skip or repeat it)
+    help_request: str | None = None  # the sub-agent is blocked: what it needs from another specialist
+    helps_task_id: int | None = None  # this task answers that (blocked) task's help_request
+    user_question: str | None = None  # blocked, and the Manager asked the user this in the chat
     created_at: datetime = Field(default_factory=_now)
     finished_at: datetime | None = None
 

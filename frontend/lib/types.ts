@@ -20,6 +20,9 @@ export interface Task {
   status: TaskStatus;
   result: string | null; // full response from the sub-agent
   summary: string | null; // short plain-text brief for the user
+  help_request: string | null; // the sub-agent was blocked: what it needs from another sub-agent
+  helps_task_id: number | null; // this task answers that blocked task's help request
+  user_question: string | null; // blocked, and the Manager asked the user this in the chat
   created_at: string;
   finished_at: string | null;
 }

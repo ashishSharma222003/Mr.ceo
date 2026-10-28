@@ -48,6 +48,7 @@ uvicorn app.main:app --reload --port 8000
 | `LLM_PROVIDER` | `anthropic` | `anthropic` or `ollama` |
 | `ANTHROPIC_API_KEY` | *(empty)* | With provider `anthropic`, **empty = fake mode** (see below) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server |
+| `OLLAMA_NUM_CTX` | `16384` | Context window for Ollama models. Ollama's own default (4096) truncates the Manager's prompt once a conversation grows |
 | `MANAGER_MODEL` | provider default | Model for the Manager (`claude-sonnet-5-5` / `bonsai-2:4b`) |
 | `DEFAULT_AGENT_MODEL` | provider default | Model given to agents created without one |
 
@@ -133,6 +134,9 @@ One unit of work given to one agent.
 | `thread_id` | str \| null | The Manager conversation this task belongs to |
 | `status` | enum | `pending` → `running` → `done` \| `failed` |
 | `result` | str \| null | Agent output, or the error message if failed |
+| `help_request` | str \| null | Set when the agent was blocked: what it needs from another agent (see 6.8) |
+| `helps_task_id` | int \| null | Set on a helper task: the blocked task whose request it answers |
+| `user_question` | str \| null | Set on a blocked task when the Manager asked the user in the chat (`ask_user`) |
 | `created_at` / `finished_at` | datetime | |
 
 ### `Skill`
@@ -380,6 +384,42 @@ Rules:
 - Fake mode (no API key) mimics this: the item is marked done on success, and a canned manager message is posted.
 - Real mode costs one extra Manager LLM call per finished sub-agent task.
 
+**Duplicate todos.** Small models often call `add_todo` and `delegate_to_agent` without the `todo_id`, in either order. The prompt says to always pass it, and a per-run `Unpaired` record (`tasklist_tools.py`) pairs the two calls anyway: a delegation without `todo_id` uses the item `add_todo` just made in the same run, and an `add_todo` after such a delegation renames the item the delegation auto-created instead of adding another. `add_todo` with the title of an item that hasn't started yet returns that item instead of a copy.
+
+### 6.8 Manager-mediated help between sub-agents
+
+A sub-agent that can't finish without another specialist (e.g. a Writer that needs a figure from a Calculator) asks for help. The Manager picks who answers, and the answer goes back word for word.
+
+```
+Writer task ends with help_request ("what does $1000 grow to at 5% for 10 years?")
+  │   (AgentReport.help_request, or a "NEED HELP:" line in a plain-text answer)
+  ▼  notify_task_finished
+Manager gets "[UPDATE] ... is BLOCKED ... Help needed: ..." (todo stays in_progress, never auto-submitted)
+  │
+  ▼  ask_agent(agent_id=Calculator, todo_id, question)
+helper Task (helps_task_id = Writer's task, same todo_id) runs on the Calculator
+  │
+  ▼  helper done: _relay_answer (no Manager LLM call)
+new Writer task on the SAME todo: "You asked for help: ... 'Calculator' answered: ..."
+  │   (same todo_id, so the Writer remembers its draft)
+  ▼
+Writer finishes → normal [UPDATE] → Manager submits for review
+```
+
+The Manager unblocks a sub-agent in one of three ways:
+
+| Tool | When | The answer |
+|---|---|---|
+| `answer_agent(todo_id, answer)` | The answer is already in the conversation (sub-agents only see their instruction) | Goes back at once |
+| `ask_agent(agent_id, todo_id, question)` | Another sub-agent can work it out | Relayed when the helper finishes (above) |
+| `ask_user(todo_id, question)` | Only the user knows | The question is posted **in the chat** (not the tasklist; the todo stays `in_progress`). On the user's next chat message the Manager sees the open questions and calls `answer_agent`, which passes the **user's message verbatim** to the blocked sub-agent on the same todo |
+
+Rules:
+- Every sub-agent's system prompt tells it how to ask (`HELP_PROMPT` in `runner.py`); no extra tool is needed.
+- All three refuse a todo that isn't blocked or already has an active helper; `ask_agent` also refuses the blocked agent itself, and `ask_user` a second question on the same task. A **failed** helper is reported to the Manager, which tells the user and can ask again.
+- If the Manager doesn't act on a blocked report, it is nudged once to use one of the three. A question waiting for the user counts as acting. Blocked work is never auto-submitted for review (also not by `recover()` at startup).
+- The UI shows the task as **Getting help**, nests the helper's attempt under the blocked one ("Calculator → Writer, via the Manager"), and the activity feed says "Calculator is helping Writer with …".
+
 ---
 
 ## 7. Key design decisions
@@ -406,7 +446,9 @@ Rules:
 
 ## 9. Roadmap: sub-agent ↔ sub-agent collaboration (TODO)
 
-**Today:** hub-and-spoke. Sub-agents are isolated (they only have their skills as tools) and every handoff goes through the Manager: the `[UPDATE]` message comes back, the Manager reads it, then delegates the next step. This costs one Manager LLM call per hop and the Manager may paraphrase away detail. It is fine for linear pipelines (research → write → review).
+**Today:** hub-and-spoke. Sub-agents are isolated (they only have their skills as tools) and every handoff goes through the Manager.
+- [x] **Mediated help (done, see 6.8).** A blocked sub-agent asks for help, the Manager picks a helper with `ask_agent`, and the answer is relayed back verbatim to the same todo. One Manager LLM call per request (choosing the helper), none for the relay.
+- Pipelines (research → write → review) still go step by step: the `[UPDATE]` comes back, the Manager reads it, then delegates the next step, and may paraphrase away detail.
 
 Options for letting agents work with each other, in recommended order:
 
@@ -432,7 +474,7 @@ Setup: `LLM_PROVIDER=ollama`, `MANAGER_MODEL=bonsai-2:4b`, `DEFAULT_AGENT_MODEL=
 - Asked the Manager to have the Calculator compute `(17*23)+5`. The Manager called `add_todo` + `delegate`, the sub-agent ran in the background and returned `396` (correct), the `[UPDATE]` came back, the Manager completed the todo and told the user. Whole round trip about 2m20s.
 - **Bug found:** the model called `add_todo` and then `delegate` *without* `todo_id`, so `_dispatch` created a second todo. Result: todo #1 `done`, todo #2 `todo` forever (duplicate). Small models skip optional args.
 - TODOs:
-  - [ ] In `_dispatch`, if `todo_id` is missing, reuse the thread's newest unlinked `todo` item with the same/similar title instead of always creating a new one.
+  - [x] Fixed: the add_todo/delegate calls of one Manager run are paired, in either order (see 6.7, "Duplicate todos").
   - [ ] Re-test with a larger or less quantized model (this one is Q2_0) for multi-agent plans and harder tasks.
-  - [ ] Try a larger context for Ollama (`num_ctx`) in `make_model`.
+  - [x] Larger context for Ollama: `OLLAMA_NUM_CTX` (default 16384) in `make_model`. At 4096 the Manager's prompt was truncated and it returned empty turns (2026-10-28).
   - [ ] Strip r1-style `<think>` content from replies if a reasoning model is used.

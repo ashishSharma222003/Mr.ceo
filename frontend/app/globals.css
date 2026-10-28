@@ -212,7 +212,8 @@ svg {
   width: 10px;
   height: 10px;
 }
-.dot[data-state='running'] {
+.dot[data-state='running'],
+.dot[data-state='help'] {
   border-color: var(--orange);
   border-style: dashed;
   animation: spin 3s linear infinite;
@@ -256,7 +257,8 @@ svg {
   background: var(--hover);
   color: var(--muted);
 }
-.state-pill[data-state='running'] {
+.state-pill[data-state='running'],
+.state-pill[data-state='help'] {
   background: color-mix(in srgb, var(--orange) 16%, transparent);
   color: var(--orange);
 }
@@ -866,6 +868,14 @@ button.task-chip {
 }
 .attempt[data-status='failed'] .attempt-block[data-from='agent'] {
   background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+.attempt-block[data-from='help'] {
+  background: color-mix(in srgb, var(--orange) 12%, transparent);
+}
+/* A colleague answering a blocked sub-agent: nested under the attempt it helps. */
+.attempt.helper {
+  margin-left: 16px;
+  border-style: dashed;
 }
 .label {
   display: block;

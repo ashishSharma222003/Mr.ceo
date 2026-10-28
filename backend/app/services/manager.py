@@ -31,7 +31,7 @@ from .llm import make_model
 from .memory import get_checkpointer, save_message
 from .runner import run_task
 from .stream import stream_agent
-from .tasklist_tools import build_tasklist_tools
+from .tasklist_tools import Unpaired, build_tasklist_tools
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,10 @@ MANAGER_PROMPT = (
     "rework a todo delegate again with that todo_id and refer to its previous work. For a different "
     "todo it starts with a clean memory: put all the context it needs in the instruction.\n\n"
     "TASKLIST: you own this conversation's tasklist. For each unit of work, add_todo first and "
-    "pass its id as todo_id when delegating. The user may add, rename or remove items at any "
+    "ALWAYS pass its id as todo_id when delegating: delegate_to_agent without todo_id creates a second, "
+    "duplicate task. Call add_todo once per unit of work, never twice for the same thing, and if the "
+    "tasklist already has an item for the work (e.g. one the user added), delegate with that id instead "
+    "of adding a new one. The user may add, rename or remove items at any "
     "time; the current list is below, and get_tasklist shows it again. "
     "Messages starting with [UPDATE] are reports from the system that a sub-agent finished or "
     "failed. You are the gatekeeper: judge whether the result really meets the todo's requirements. "
@@ -69,6 +72,14 @@ MANAGER_PROMPT = (
     "in the tasklist). If they want changes: call edit_todo to update its requirements, then "
     "delegate_to_agent again to the same sub-agent with that todo_id, stating exactly what must change "
     "and referring to its previous work. If they only ask a question, answer it without re-delegating.\n\n"
+    "HELP REQUESTS: an [UPDATE] saying a sub-agent is BLOCKED means it needs something it doesn't "
+    "have. Do NOT submit that todo. Unblock it in ONE of three ways: (a) the answer is already in this "
+    "conversation (sub-agents only see your instruction, not the user's messages): call answer_agent "
+    "with the todo_id and the answer; (b) another sub-agent can work it out: call ask_agent with its "
+    "agent_id, the todo_id and a self-contained question; (c) only the user can know (facts about them, "
+    "their preferences, a choice to make): call ask_user with the todo_id and one clear question, which "
+    "is shown to them in the chat. Every answer goes back to the blocked sub-agent automatically, "
+    "which then finishes the todo and reports again.\n\n"
     "TASK REFERENCES: tasklist items are called tasks and have ids like Task #3. Whenever you mention "
     "one to the user, write it exactly as Task #<id> (e.g. 'Task #3 is done'), so the user can click it.\n\n"
     "TASK WRITING: give every todo a short `title` (a heading) and a `description` saying what the "
@@ -121,20 +132,105 @@ async def _dispatch(
     await session.commit()
     await session.refresh(task)
     await events.publish("task.updated", task.model_dump())
-
-    bg = asyncio.create_task(run_task(task.id))
-    _background.add(bg)  # keep a reference so it isn't garbage collected
-    bg.add_done_callback(_background.discard)
+    spawn(run_task(task.id))
     return task
 
 
-def _delegate_tool(thread_id: str, created: list[Task]) -> StructuredTool:
+async def _ask_helper(session: AsyncSession, helper: Agent, question: str, blocked: Task) -> Task:
+    """Start a task on `helper` that answers `blocked`'s help request. The todo stays linked to the
+    blocked task; when the helper finishes, its answer is relayed back (see _relay_answer)."""
+    task = Task(
+        agent_id=helper.id, instruction=question, thread_id=blocked.thread_id,
+        todo_id=blocked.todo_id, helps_task_id=blocked.id,
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+    await events.publish("task.updated", task.model_dump())
+    spawn(run_task(task.id))
+    return task
+
+
+async def _helper_of(session: AsyncSession, task_id: int) -> Task | None:
+    """A helper that is answering (or answered) this task's request. A failed one can be retried."""
+    q = select(Task).where(Task.helps_task_id == task_id, Task.status != TaskStatus.failed)
+    return (await session.exec(q)).first()
+
+
+async def _blocked(session: AsyncSession, thread_id: str, todo_id: int) -> Task | str:
+    """The sub-agent task blocked on this todo and waiting for an answer, or why there is none."""
+    todo = await todos.get_todo(session, todo_id, thread_id)
+    blocked = await session.get(Task, todo.task_id) if todo and todo.task_id else None
+    if not blocked or not blocked.help_request:
+        return f"No sub-agent is blocked on Task #{todo_id}. Use delegate_to_agent for new work."
+    if await _helper_of(session, blocked.id):
+        return f"A sub-agent is already answering Task #{todo_id}'s request. Wait for it."
+    return blocked
+
+
+async def _answer_blocked(session: AsyncSession, blocked: Task, who: str, answer: str) -> Task:
+    """Send an answer, verbatim, to the blocked sub-agent on the same todo (so it remembers its draft)."""
+    agent = await session.get(Agent, blocked.agent_id)
+    instruction = (
+        f"You asked for help: {blocked.help_request}\n{who} answered:\n{answer}\n\n"
+        "Use this answer to finish your task. Do not ask for the same help again."
+    )
+    return await _dispatch(session, agent, instruction, blocked.thread_id, blocked.todo_id)
+
+
+async def _open_questions(session: AsyncSession, thread_id: str) -> list[Task]:
+    """Blocked tasks whose question to the user (ask_user) is still unanswered."""
+    q = (
+        select(Task)
+        .join(Todo, Todo.task_id == Task.id)
+        .where(Task.thread_id == thread_id, Task.user_question.is_not(None), Todo.status == TodoStatus.in_progress)
+    )
+    return list((await session.exec(q.order_by(Task.id))).all())
+
+
+def _question_text(agent: Agent, task: Task) -> str:
+    return (
+        f"**{agent.name}** has a question about Task #{task.todo_id}:\n\n{task.user_question}\n\n"
+        "Reply here in the chat and I'll pass your answer on."
+    )
+
+
+async def _relay_answer(session: AsyncSession, helper_task: Task) -> str:
+    """The helper finished: send its answer back to the blocked sub-agent. Returns the message for the user."""
+    blocked = await session.get(Task, helper_task.helps_task_id)
+    agent = await session.get(Agent, blocked.agent_id)
+    helper = await session.get(Agent, helper_task.agent_id)
+    await _answer_blocked(session, blocked, f"'{helper.name}'", helper_task.result)
+    return (
+        f"'{helper.name}' answered '{agent.name}' on Task #{blocked.todo_id}. "
+        f"I passed the answer on, and '{agent.name}' is finishing the task."
+    )
+
+
+async def _unlinked(session: AsyncSession, added: list[int]) -> int | None:
+    """Claim the first todo added in this Manager run that no task works on yet."""
+    for todo_id in list(added):
+        todo = await session.get(Todo, todo_id)
+        # Re-check after the await: a parallel delegate call may have claimed it meanwhile.
+        if todo and todo.task_id is None and todo.status == TodoStatus.todo and todo_id in added:
+            added.remove(todo_id)
+            return todo_id
+    return None
+
+
+def _delegate_tool(thread_id: str, created: list[Task], unpaired: Unpaired) -> StructuredTool:
     async def delegate_to_agent(agent_id: int, instruction: str, todo_id: int | None = None) -> str:
         async with SessionLocal() as session:  # own session: tool calls may run in parallel
             agent = await session.get(Agent, agent_id)
             if not agent or not threads.in_team(await session.get(Thread, thread_id), agent):
                 return f"No sub-agent #{agent_id} in this chat's team. Call list_agents."
+            # Small models often skip todo_id: use the item add_todo just made, not a duplicate.
+            if todo_id in unpaired.added:
+                unpaired.added.remove(todo_id)  # claimed explicitly
+            todo_id = todo_id or await _unlinked(session, unpaired.added)
             task = await _dispatch(session, agent, instruction, thread_id, todo_id)
+            if todo_id is None:  # _dispatch made an item; a later add_todo in this run names it
+                unpaired.auto.append(task.todo_id)
         created.append(task)
         return f"Task #{task.todo_id} started on '{agent.name}'. It runs in the background."
 
@@ -142,11 +238,83 @@ def _delegate_tool(thread_id: str, created: list[Task]) -> StructuredTool:
         coroutine=delegate_to_agent,
         name="delegate_to_agent",
         description=(
-            "Send a task to a sub-agent by id (see the sub-agent list). Pass todo_id (from add_todo) "
-            "to link the task to a tasklist item. The sub-agent remembers earlier messages about the "
+            "Send a task to a sub-agent by id (see the sub-agent list). Always pass todo_id (from add_todo "
+            "or the tasklist); without it a duplicate tasklist item is created. The sub-agent remembers earlier messages about the "
             "same todo_id only; a new todo starts with a clean memory, so include all needed context."
         ),
     )
+
+
+def _help_tools(thread_id: str, created: list[Task], user_message: str | None) -> list[StructuredTool]:
+    """Ways to unblock a sub-agent. `user_message`: set when this run answers a user chat message."""
+
+    async def ask_agent(agent_id: int, todo_id: int, question: str) -> str:
+        async with SessionLocal() as session:
+            helper = await session.get(Agent, agent_id)
+            if not helper or not threads.in_team(await session.get(Thread, thread_id), helper):
+                return f"No sub-agent #{agent_id} in this chat's team. Call list_agents."
+            blocked = await _blocked(session, thread_id, todo_id)
+            if isinstance(blocked, str):
+                return blocked
+            if helper.id == blocked.agent_id:
+                return "That is the blocked sub-agent itself. Pick a different sub-agent."
+            task = await _ask_helper(session, helper, question, blocked)
+        created.append(task)
+        return f"Asked '{helper.name}'. Its answer will be passed back automatically when it finishes."
+
+    async def ask_user(todo_id: int, question: str) -> str:
+        async with SessionLocal() as session:
+            blocked = await _blocked(session, thread_id, todo_id)
+            if isinstance(blocked, str):
+                return blocked
+            if blocked.user_question:
+                return f"The user was already asked about Task #{todo_id}. Wait for their reply."
+            blocked.user_question = question
+            session.add(blocked)
+            await session.commit()
+            await events.publish("task.updated", blocked.model_dump())
+        return "The question is shown to the user in the chat. When they reply, pass it on with answer_agent."
+
+    async def answer_agent(todo_id: int, answer: str) -> str:
+        async with SessionLocal() as session:
+            blocked = await _blocked(session, thread_id, todo_id)
+            if isinstance(blocked, str):
+                return blocked
+            if blocked.user_question and user_message:
+                who, answer = "The user", user_message  # their own words, not a paraphrase
+            else:
+                who = "The Manager"
+            task = await _answer_blocked(session, blocked, who, answer)
+        created.append(task)
+        return f"Sent the answer to the sub-agent on Task #{todo_id}. It is finishing the task."
+
+    return [
+        StructuredTool.from_function(
+            coroutine=ask_agent,
+            name="ask_agent",
+            description=(
+                "When a sub-agent is BLOCKED on a todo and asks for help: ask another sub-agent (agent_id) "
+                "a self-contained question for that todo_id. Its answer goes back to the blocked sub-agent "
+                "automatically, which then finishes the todo."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=ask_user,
+            name="ask_user",
+            description=(
+                "When a BLOCKED sub-agent needs something only the user knows: ask the user one clear "
+                "question for that todo_id. It is shown in the chat; their reply comes as a normal message."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=answer_agent,
+            name="answer_agent",
+            description=(
+                "Answer a BLOCKED sub-agent on a todo_id: with facts already in this conversation, or with "
+                "the user's reply to a question you asked with ask_user. The sub-agent then finishes the todo."
+            ),
+        ),
+    ]
 
 
 def _action_lines(actions: list[dict]) -> str:
@@ -159,15 +327,20 @@ async def pending_approval(session: AsyncSession, thread_id: str) -> Approval | 
 
 
 async def _run_manager(
-    session: AsyncSession, agents: list[Agent], thread_id: str, inputs, created: list[Task]
+    session: AsyncSession, agents: list[Agent], thread_id: str, inputs, created: list[Task],
+    user_message: str | None = None,
 ) -> str:
-    """Run the Manager on a user message / update (str) or resume it after an approval (Command)."""
+    """Run the Manager on a user message / update (str) or resume it after an approval (Command).
+    `user_message`: the user's own words, when this run answers a chat message."""
     tasklist = todos.format_tasklist(await todos.list_todos(session, thread_id))
     thread = await session.get(Thread, thread_id)
     own = OWN_TEAM_NOTE if thread and thread.team == "own" else ""
+    unpaired = Unpaired()  # pairs add_todo with delegations that skip todo_id, in this run
     manager = create_agent(
         model=make_model(settings.resolved_manager_model),
-        tools=[_delegate_tool(thread_id, created)] + build_agent_tools(thread_id) + build_tasklist_tools(thread_id),
+        tools=[_delegate_tool(thread_id, created, unpaired), *_help_tools(thread_id, created, user_message)]
+        + build_agent_tools(thread_id)
+        + build_tasklist_tools(thread_id, unpaired),
         system_prompt=MANAGER_PROMPT.format(
             tasklist=tasklist,
             agents=agents_text(agents),
@@ -244,7 +417,15 @@ async def handle_message(
             )
         else:
             text = (_about(todo, task) + message) if todo else message
-            reply = await _run_manager(session, agents, thread_id, text, created)
+            if waiting := await _open_questions(session, thread_id):
+                text = (
+                    "[WAITING FOR THE USER] You asked the user, for blocked sub-agents:\n"
+                    + "\n".join(f"- Task #{t.todo_id}: {t.user_question}" for t in waiting)
+                    + "\nIf the message below answers one, call answer_agent with that todo_id "
+                    "(the user's words are passed on as they are). Otherwise handle it as usual.\n\n"
+                    + text
+                )
+            reply = await _run_manager(session, agents, thread_id, text, created, user_message=message)
         await save_message(session, thread_id, "manager", reply, todo_id=todo.id if todo else None)
         # Items created while answering this message remember it, so each task page can show
         # the request it came from.
@@ -298,12 +479,28 @@ async def notify_task_finished(task_id: int) -> None:
             ok = task.status == TaskStatus.done
             todo = await todos.get_todo(session, task.todo_id) if task.todo_id else None
             about = f"Task #{todo.id} '{todo.title}'" if todo else "its task"
-            update = (
-                f"[UPDATE] Sub-agent '{agent.name}' {'finished' if ok else 'FAILED'} {about}."
-                f"\nInstruction: {task.instruction}\nResult: {task.result}"
-                + ("\n\nIf the work meets the requirements, submit it and report the key points of this "
-                   "result to the user." if ok else "")
-            )
+            blocked = ok and bool(task.help_request) and not task.helps_task_id
+            if task.helps_task_id:  # a helper's answer to a blocked sub-agent
+                asker = await session.get(Agent, (await session.get(Task, task.helps_task_id)).agent_id)
+                update = (
+                    f"[UPDATE] Sub-agent '{agent.name}' FAILED to answer '{asker.name}''s help request on "
+                    f"{about}. Error: {task.result}\nTell the user; offer to ask another sub-agent."
+                )
+            elif blocked:
+                update = (
+                    f"[UPDATE] Sub-agent '{agent.name}' is BLOCKED on {about} and needs help.\n"
+                    f"Help needed: {task.help_request}\nIts work so far: {task.result}\n\n"
+                    f"Do not submit it. Unblock it (todo_id={task.todo_id}) with answer_agent if the answer is in "
+                    "this conversation, ask_agent if another sub-agent can work it out, or ask_user if only the "
+                    "user knows."
+                )
+            else:
+                update = (
+                    f"[UPDATE] Sub-agent '{agent.name}' {'finished' if ok else 'FAILED'} {about}."
+                    f"\nInstruction: {task.instruction}\nResult: {task.result}"
+                    + ("\n\nIf the work meets the requirements, submit it and report the key points of this "
+                       "result to the user." if ok else "")
+                )
 
             async with _lock(thread_id):
                 await session.refresh(task)
@@ -311,27 +508,46 @@ async def notify_task_finished(task_id: int) -> None:
                     return
                 if not settings.fake_mode and await pending_approval(session, thread_id):
                     return  # the Manager is paused mid-run; process_pending retries after the answer
-                await save_message(session, thread_id, "system", update, todo_id=task.todo_id)
-                if settings.fake_mode:
-                    reply = f"(fake) Task #{task.todo_id} {'finished' if ok else 'failed'}."
+                if ok and task.helps_task_id:
+                    # No Manager LLM call: the answer goes back word for word, so nothing is lost.
+                    reply = await _relay_answer(session, task)
                 else:
-                    agents = await threads.team_agents(session, thread_id)
-                    reply = await _run_manager(session, agents, thread_id, update, [])
+                    await save_message(session, thread_id, "system", update, todo_id=task.todo_id)
+                    if settings.fake_mode:
+                        reply = f"(fake) Task #{task.todo_id} {'finished' if ok else 'failed'}."
+                    else:
+                        agents = await threads.team_agents(session, thread_id)
+                        reply = await _run_manager(session, agents, thread_id, update, [])
 
                 # The Manager must decide: submit for approval, or send the work back (a new task
-                # replaces todo.task_id). If it did neither, ask once more.
-                todo = await todos.todo_for_task(session, task.id)
+                # replaces todo.task_id), or get help for a blocked sub-agent. If it did none, ask once more.
+                todo = await todos.todo_for_task(session, task.id) if not task.helps_task_id else None
                 if todo:
                     await session.refresh(todo)  # the Manager's tools changed it in their own sessions
-                if todo and ok and not settings.fake_mode and todo.status == TodoStatus.in_progress:
+
+                def undecided() -> bool:
+                    return todo.status == TodoStatus.in_progress and todo.task_id == task.id
+
+                await session.refresh(task)  # ask_user may have set user_question in its own session
+                if (
+                    todo and ok and not settings.fake_mode and undecided()
+                    and not task.user_question and not await _helper_of(session, task.id)
+                ):
                     nudge = (
+                        f"[UPDATE] You did not act on Task #{todo.id} yet. The sub-agent is blocked: call "
+                        "answer_agent if the answer is in this conversation, ask_agent if another sub-agent can "
+                        "help, or ask_user if only the user knows."
+                        if blocked else
                         f"[UPDATE] You did not decide on Task #{todo.id} yet. Either call submit_for_review "
                         "if the work meets the requirements, or delegate it again with corrections."
                     )
                     agents = await threads.team_agents(session, thread_id)
                     reply = await _run_manager(session, agents, thread_id, nudge, []) or reply
                     await session.refresh(todo)
-                if todo and ok and todo.status == TodoStatus.in_progress and todo.task_id == task.id:
+                    await session.refresh(task)
+                if todo and blocked and task.user_question and undecided():
+                    reply = _question_text(agent, task)  # the question itself, in the chat, not a paraphrase
+                if todo and ok and not blocked and undecided():
                     # Still undecided (or fake mode): never leave finished work stuck, let the user judge.
                     await todos.submit_for_review(session, todo)
                 await save_message(session, thread_id, "manager", reply, todo_id=task.todo_id)
@@ -367,7 +583,7 @@ async def recover() -> None:
         q = select(Todo).where(Todo.status == TodoStatus.in_progress, Todo.task_id.is_not(None))
         for todo in (await session.exec(q)).all():
             task = await session.get(Task, todo.task_id)
-            if task and task.status == TaskStatus.done and task.notified:
+            if task and task.status == TaskStatus.done and task.notified and not task.help_request:
                 await todos.submit_for_review(session, todo)
     for tid in cut_off:
         log.info("Resuming task %s after restart", tid)

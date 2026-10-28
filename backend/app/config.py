@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     anthropic_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_num_ctx: int = 16384  # Ollama's own default (4096) cuts off the Manager's prompt
     manager_model: str = ""  # empty = provider default
     default_agent_model: str = ""  # used when an agent is created without a model
 

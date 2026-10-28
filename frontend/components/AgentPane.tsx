@@ -5,7 +5,7 @@ import { memo, useContext, useMemo } from 'react';
 import { focusTodo, openForm, useStore } from '@/lib/store';
 import { ago } from '@/lib/status';
 import type { Agent, Task } from '@/lib/types';
-import Attempt from './Attempt';
+import AttemptList from './Attempt';
 import { initials, OpenTask, StatePill, useTeam, useTodoState } from './bits';
 import { ChevronLeft, ChevronRight, Plus } from './icons';
 
@@ -73,7 +73,23 @@ const AgentRow = memo(function AgentRow({ agent, current, last }: { agent: Agent
 const ActivityRow = memo(function ActivityRow({ task }: { task: Task }) {
   const agent = useStore((s) => s.agents.find((a) => a.id === task.agent_id)?.name ?? 'Sub-agent');
   const title = useStore((s) => (task.todo_id != null ? s.todos.find((t) => t.id === task.todo_id)?.title : undefined));
-  const verb = busy(task) ? 'is working on' : task.status === 'failed' ? 'failed' : 'finished';
+  const asker = useStore((s) => {
+    const blocked = task.helps_task_id != null ? s.tasks[task.helps_task_id] : undefined;
+    return blocked && (s.agents.find((a) => a.id === blocked.agent_id)?.name ?? 'a sub-agent');
+  });
+  const verb = asker
+    ? busy(task)
+      ? `is helping ${asker} with`
+      : task.status === 'failed'
+        ? `couldn't help ${asker} with`
+        : `helped ${asker} with`
+    : busy(task)
+      ? 'is working on'
+      : task.status === 'failed'
+        ? 'failed'
+        : task.help_request
+          ? 'asked for help with'
+          : 'finished';
   return (
     <li>
       <TaskLink className="pa-act" todoId={task.todo_id} data-status={task.status}>
@@ -115,11 +131,7 @@ function TaskFocus({ id }: { id: number }) {
         </Link>
       </div>
       {attempts.length ? (
-        <ol className="attempts">
-          {attempts.map((t, i) => (
-            <Attempt key={t.id} task={t} n={i + 1} />
-          ))}
-        </ol>
+        <AttemptList tasks={attempts} />
       ) : (
         <div className="empty small">Not delegated to a sub-agent yet.</div>
       )}
