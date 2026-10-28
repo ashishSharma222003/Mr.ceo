@@ -93,13 +93,7 @@ User ─► API ─► Manager (LLM: plan + route)
 - Typed API client generated from FastAPI's OpenAPI schema
 - Possible: assistant-ui / Vercel AI SDK for chat, React Flow for an agent/task canvas
 
-## Core Screens (to design first)
 
-- Chat with the Manager
-- Task board / live timeline
-- Agent builder
-- Agent detail
-- Settings
 
 ## Roadmap
 
