@@ -138,5 +138,16 @@ Mr.ceo/
 └── README.md
 ```
 
-![Querry Processing](image.png) 
-![Query compeleted](image-1.png)
+## Screenshots
+
+### While a query is processing
+
+The Manager has split the request into three tasks and delegated them. Sub-agents work in the background: the tasklist shows each task as *Working* or *Getting help*, and the activity feed shows live updates.
+
+![Query processing](image.png)
+
+### When the query is completed
+
+Every task has finished and is waiting for the user's approval. A sub-agent's question was asked directly in the chat, the user answered there, and the Manager reported the key results.
+
+![Query completed](image-1.png)
