@@ -101,6 +101,27 @@ User ─► API ─► Manager (LLM: plan + route)
 - Agent detail
 - Settings
 
+## Future Capabilities
+
+### Sandboxes for sub-agents
+
+Give each sub-agent an isolated workspace where it can actually *do* things, not just write text.
+
+- **Isolated environment:** a sandbox (e.g. a Docker container or microVM) per task or per conversation, with its own working directory. Sub-agents can run code and scripts, process data, and create or edit files there.
+- **Shared with the user:** files a sub-agent produces (reports, spreadsheets, charts, code) are saved as task artifacts. The user can preview and download them from the task view, and the Manager can pass them on to other sub-agents.
+- **Opt-in as a skill:** a `sandbox` skill, so only agents that are given it can use it.
+- **Safe by default:** no access to the host machine, CPU, memory and time limits, network off unless allowlisted, user approval for risky actions, and cleanup when the work is done.
+
+### Files and attachments (multimodal)
+
+Let the user and the agents work with more than text.
+
+- **Attachments in chat:** the user can attach files (images, PDFs, CSV/Excel, documents) to a message. They are stored with the conversation.
+- **Routed by the Manager:** the Manager sees what was attached and passes the relevant files to the sub-agents along with their instruction.
+- **Multimodal models:** models that support vision read images and PDFs directly. Other files are converted to text, or placed in the sandbox for a sub-agent to process with code.
+- **Files as results:** sub-agents can return files as well as text, using the same artifact storage as the sandbox.
+- **Limits:** allowed file types and size limits, and files stay private to their conversation.
+
 ## Roadmap
 
 - [ ] Decide agent framework (LangGraph vs Claude Agent SDK)
@@ -111,6 +132,8 @@ User ─► API ─► Manager (LLM: plan + route)
 - [ ] Agent builder UI
 - [ ] Auth
 - [ ] Limits and safety: per-task step, token, and time caps; human approval for risky actions
+- [ ] Sub-agent sandboxes: run code and work on files in isolation, and share the resulting files with the user
+- [ ] File attachments and multimodal input: images, PDFs and documents in chat, passed to the right sub-agents
 
 ## Project Structure
 
